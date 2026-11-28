@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/rendering.dart';
 import 'package:flutter/widgets.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../editor/markdown_inline.dart';
 import '../../editor/markdown_table.dart'
@@ -10,6 +11,10 @@ import '../../editor/row_geometry.dart';
 import '../../editor/table_geometry.dart';
 import '../../theme/colors.dart';
 import '../../theme/typography.dart';
+import '../../state/find_in_note_state.dart';
+import '../find/find_highlights.dart';
+import '../find/find_in_note_host.dart' show findFieldDecoration;
+import 'find_decoration.dart';
 import 'line_boxes.dart';
 import 'live_preview_controller.dart';
 import 'live_preview_decorations.dart';
@@ -100,6 +105,57 @@ class TableGridState extends State<TableGrid> {
     final hover = widget.links?.cmdHover;
     final metrics = _metrics(scaler);
     final rows = [table.header.cells, for (final row in table.body) row.cells];
+    // The cells mount their find highlights under a scope (#61 F3, D8): a
+    // text segment's body rows, an excerpt card's table rows.
+    final find = FindGridScope.maybeOf(context);
+    // Find in note's ink in cell [j] of grid row [g] (#61 F6, D7): built
+    // under the find state while the grid's scope is active.
+    Widget inked(int g, int j, RichText Function(FindDecoration? ink) text) {
+      if (find == null || !find.active || j >= rows[g].length) {
+        return text(null);
+      }
+      final start = find.textStart + rows[g][j].start;
+      final end = find.textStart + rows[g][j].end;
+      return Consumer(
+        builder: (context, ref, _) => text(
+          ref.watch(
+            findInNoteProvider.select(
+              (state) => findFieldDecoration(
+                state,
+                segment: find.segment,
+                kind: find.kind,
+                start: start,
+                end: end,
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    Widget cellText(int g, int j, Widget text) {
+      if (find == null || j >= rows[g].length) return text;
+      final cell = rows[g][j];
+      final start = find.textStart + cell.start;
+      final end = find.textStart + cell.end;
+      return FindParagraphHighlights(
+        layerKey: find.cellKey(g, j),
+        // A grid shows every marker hidden: it never reveals (D8).
+        ranges: (state) => find.active
+            ? findPaintRanges(
+                state,
+                segment: find.segment,
+                kind: find.kind,
+                start: start,
+                end: end,
+                reveals: false,
+              )
+            : const [],
+        layout: cell.text(widget.text),
+        child: text,
+      );
+    }
+
     return _GridLayout(
       key: _gridKey,
       text: text,
@@ -113,28 +169,39 @@ class TableGridState extends State<TableGrid> {
               key: keyPrefix == null ? null : ValueKey('$keyPrefix-$g-$j'),
               padding: metrics.cellPadding,
               inset: g == 0 ? metrics.hiddenLineHeight / 2 : 0,
-              child: RichText(
-                textAlign: _textAlign(table.alignments[j]),
-                textScaler: scaler,
-                strutStyle: strut,
-                text: buildLivePreviewSpan(
-                  j < cells.length ? cells[j].text(text) : '',
-                  style: g == 0 ? headerStyle : widget.style,
-                  itemText: true,
-                  forceHidden: true,
-                  // Grid row 0 is line 0; the delimiter line has no grid row.
-                  fenced: [
-                    widget.fenced?.elementAtOrNull(g == 0 ? 0 : g + 1) ?? false,
-                  ],
-                  isResolved: widget.links?.isResolved,
-                  // As the source field judges the cell: by the character
-                  // before it in the table line, not as a line start.
-                  before: j < cells.length
-                      ? unitBeforeInLine(text, cells[j].start)
-                      : null,
-                  cmdHover: j < cells.length
-                      ? _cellHover(hover, cells[j].start, cells[j].end)
-                      : null,
+              child: cellText(
+                g,
+                j,
+                inked(
+                  g,
+                  j,
+                  (ink) => RichText(
+                    textAlign: _textAlign(table.alignments[j]),
+                    textScaler: scaler,
+                    strutStyle: strut,
+                    text: buildLivePreviewSpan(
+                      j < cells.length ? cells[j].text(text) : '',
+                      style: g == 0 ? headerStyle : widget.style,
+                      itemText: true,
+                      forceHidden: true,
+                      // Grid row 0 is line 0; the delimiter line has no grid row.
+                      fenced: [
+                        widget.fenced?.elementAtOrNull(g == 0 ? 0 : g + 1) ??
+                            false,
+                      ],
+                      isResolved: widget.links?.isResolved,
+                      // As the source field judges the cell: by the character
+                      // before it in the table line, not as a line start.
+                      before: j < cells.length
+                          ? unitBeforeInLine(text, cells[j].start)
+                          : null,
+                      cmdHover: j < cells.length
+                          ? _cellHover(hover, cells[j].start, cells[j].end)
+                          : null,
+                      inkRanges: ink?.inkRanges ?? const <TextRange>[],
+                      current: ink?.current,
+                    ),
+                  ),
                 ),
               ),
             ),
@@ -196,7 +263,8 @@ const double _wrapSlack = 0.01;
 const double _pillRadius = 3;
 
 /// A drawn cell (TD8): a box as big as the grid lays it out (the cell's
-/// rect, padding included) holding the cell's [RichText] [padding] (c) in
+/// rect, padding included) holding the cell's [RichText] (alone, or under
+/// its find highlights: a [FindParagraphHighlights]) [padding] (c) in
 /// from its left and [inset] (H / 2 in the header band, else 0) down from
 /// its top, as wide as the box less c on each side (plus the wrap slack).
 class _Cell extends SingleChildRenderObjectWidget {
@@ -204,7 +272,7 @@ class _Cell extends SingleChildRenderObjectWidget {
     super.key,
     required this.padding,
     required this.inset,
-    required RichText super.child,
+    required Widget super.child,
   });
 
   final double padding;
@@ -246,16 +314,29 @@ class _RenderCell extends RenderShiftedBox {
     markNeedsLayout();
   }
 
-  /// The cell's paragraph.
-  RenderParagraph get paragraph => child! as RenderParagraph;
+  /// The cell's paragraph: its child, or the paragraph under its find
+  /// highlights' stack (laid out at the stack's origin, as big as it).
+  RenderParagraph get paragraph {
+    var node = child!;
+    while (node is RenderStack) {
+      node = node.lastChild!;
+    }
+    return node as RenderParagraph;
+  }
 
   /// The paragraph's offset in the cell: (c, inset).
-  Offset get textOffset => (paragraph.parentData! as BoxParentData).offset;
+  Offset get textOffset {
+    var offset = Offset.zero;
+    for (RenderObject node = paragraph; node != this; node = node.parent!) {
+      offset += (node.parentData! as BoxParentData).offset;
+    }
+    return offset;
+  }
 
   @override
   void performLayout() {
     final width = constraints.maxWidth;
-    final text = paragraph;
+    final text = child!;
     text.layout(
       BoxConstraints.tightFor(
         width: math.max(0.0, width - 2 * _padding) + _wrapSlack,
@@ -740,6 +821,14 @@ final class _GridGeometry implements LineBoxSource {
     ).getPositionForOffset(point - _offsetOf(index)).offset;
     return cell.start + math.min(local, cell.end - cell.start);
   }
+
+  /// The grid line holding [offset] among [lines]; the first line for an
+  /// offset before it.
+  @override
+  LineBox lineAt(int offset) => lines.lastWhere(
+    (line) => line.range.start <= offset,
+    orElse: () => lines.first,
+  );
 
   /// The end of cell ([g], [j])'s text; for a missing cell, of the row's
   /// last cell; for a row without cells, its line start.

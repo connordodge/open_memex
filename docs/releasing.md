@@ -1,6 +1,6 @@
 # Releasing Open Memex
 
-This is the runbook for the person who owns the repo. It has three parts: the one-time cutover that creates the public repo, the steps for every release, and recovery when a release goes wrong. Only the repo owner pushes `v*` tags and approves the `release` environment.
+This is the runbook for the person who owns the repo. It has five parts: the one-time cutover that creates the public repo, the steps for every release, the Docker image that follows each release, recovery when a release goes wrong, and the Self-update signing key and Appcast. Only the repo owner pushes `v*` tags and approves the `release` environment.
 
 Every release is a **Release** on the public repo's GitHub Releases: the DMG, the standalone `memex` zip, their SHA-256 sums and the release notes, all for one `v<version>` tag. The release workflow (`.github/workflows/release.yml`) builds, signs, notarizes and publishes it after you approve.
 
@@ -58,6 +58,7 @@ The `release` job runs in the `release` environment and reads these environment 
 | `NOTARY_KEY_ID` | environment secret | that API key's ID |
 | `NOTARY_ISSUER_ID` | environment secret | the issuer ID shown with the API keys |
 | `LEAK_PATTERNS` | environment secret | the contents of the private deny-list file from cutover step 2, so the build's Leak check can run |
+| `SPARKLE_ED_PRIVATE_KEY_BASE64` | environment secret | the Self-update EdDSA private key, exported with `generate_keys -x` and base64-encoded (see [Self-update one-time setup](#self-update-one-time-setup)) |
 | `MACOS_SIGN_IDENTITY` | environment variable | the signing identity name, for example `Developer ID Application: Your Name (TEAMID)` |
 
 The manual dry-run job reads none of these.
@@ -68,10 +69,25 @@ The manual dry-run job reads none of these.
 2. Write `release-notes/v<ver>.md` from the template in `release-notes/README.md`: Highlights, Upgrade and Requirements. If the release migrates vaults to a new schema, the Upgrade section says so with the template's schema line.
 3. Check the pair locally with `scripts/release/check-version.sh v<ver>` (it must exit 0), then open a PR with the bump and the notes and merge it into `main`.
 4. In a fresh clone, pull `main`, tag it and push the tag: `git tag v<ver>` and `git push origin v<ver>`. The tag starts the release workflow.
-5. Approve the run: open the workflow run on the repo's Actions tab and approve the deployment to the `release` environment. Nothing is signed or published until you do.
+5. Approve the run: open the workflow run on the repo's Actions tab and approve the deployment to the `release` environment. Nothing is signed or published until you do. When the Release succeeds, `docker.yml` starts on its own and publishes the vault server image (see [Docker image](#docker-image)).
 6. Check the Release when the run ends. It must be published (not a draft) with four assets: `Open-Memex-<ver>-arm64.dmg`, `memex-<ver>-macos-arm64.zip`, `THIRD_PARTY_NOTICES.txt` and `SHA256SUMS.txt`. Download the DMG, verify it against `SHA256SUMS.txt` (`shasum -a 256 -c --ignore-missing SHA256SUMS.txt`, because the sums file also lists the files you did not download), install it on a Mac and open it; run `scripts/leak-check.sh --artifact` on the files if you want a second look.
+7. For the first two Self-update Releases, run the manual check in [`docs/self-update-acceptance.md`](self-update-acceptance.md) against the Release you just published.
 
 To try a build without publishing, run the Release workflow by hand (Actions → Release → Run workflow) with a version. That dry run reads no secrets, and it does not sign, notarize or publish.
+
+## Docker image
+
+The vault server image is `ghcr.io/connordodge/memex`. A successful Release triggers `.github/workflows/docker.yml`, which builds the image for `linux/amd64` and `linux/arm64`, smoke-tests both and publishes `ghcr.io/connordodge/memex:<x.y.z>`, `:<x.y>` and `:latest`. It moves `<x.y>` and `latest` only forward: publishing an older version, such as a patch for an earlier minor, never moves either of them backwards. Nothing is published from a pull request or a manual dry run of the Release workflow.
+
+If a publish fails, open the `docker.yml` run on the Actions tab and use **Re-run jobs** on that run. Never fix it by re-running the Release: the tag and the Release already exist, and re-running the Release would try to create them again.
+
+Do this once, after the first image is published. GitHub makes a new package private, so the Docker route in [`hosted-vault.md`](hosted-vault.md) cannot pull it:
+
+1. Open the `memex` package under your account's Packages, then Package settings, and set its visibility to Public.
+2. Check that the package is linked to the `open_memex` repo (the repo's page shows it under Packages). If it is not, connect it from the package page.
+3. From a machine that is not signed in to ghcr.io, run `docker pull ghcr.io/connordodge/memex:latest` to check that it is public.
+
+The first image comes from the first Release after v0.7.0; earlier Releases are not published retroactively.
 
 ## Recovery
 
@@ -83,3 +99,56 @@ If a run fails or the Release is wrong, the tag has already been used, so undo i
 4. Run the every-release steps again from the tag: pull `main`, then re-tag with `git tag v<ver>` and push it. If you changed the version number, start again from step 1.
 
 If the Release was already published, say so in the next release's notes, and remove any bad asset from the Release page.
+
+## Self-update
+
+Open Memex checks the **Appcast**, `https://connordodge.github.io/open_memex/appcast.xml`, for a newer Release. GitHub Pages serves it from `appcast.xml` on the `gh-pages` branch. Each item names one Release's DMG and carries its EdDSA (Ed25519) signature; the app installs a DMG only when that signature verifies against the public key built into it. That URL is built into every Self-update build, so it never changes.
+
+### Self-update one-time setup
+
+Do these steps once, before the first signed Release. A signed `build.sh` refuses to start (exit 2) without `SPARKLE_ED_KEY_PATH`, which the `release` job sets from the secret below, so every Release fails until steps 1 and 2 are done.
+
+1. Mint the keypair with Sparkle's `generate_keys` (in `bin/` of the Sparkle 2 release tarball). `generate_keys --account open-memex` creates the key in your login Keychain and prints the public key. Then export the private key with `generate_keys --account open-memex -x <file>`. Keep a backup of the private key outside the repo. It is Open Memex's own keypair, never one another app uses.
+2. Store the base64 of the exported file as the `release`-environment secret `SPARKLE_ED_PRIVATE_KEY_BASE64` (for example `base64 -i <file> | pbcopy`, then paste it under Settings → Environments → release). Then delete the exported file.
+3. Commit the public key: set `_committed` in `app/lib/src/updater/sparkle_ed_public_key.dart` to the base64 public key `generate_keys` printed, through a PR. The app reads it as `sparkleEdPublicKey`, and a test checks that it decodes to 32 bytes. An empty key refuses every install.
+4. Create the `gh-pages` branch as an orphan holding `.nojekyll` and an `appcast.xml` with one empty channel, and push it:
+
+   ```bash
+   git switch --orphan gh-pages
+   touch .nojekyll
+   cat > appcast.xml <<'XML'
+   <?xml version="1.0" encoding="utf-8"?>
+   <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+     <channel>
+       <title>Open Memex</title>
+     </channel>
+   </rss>
+   XML
+   git add .nojekyll appcast.xml
+   git commit -m "Empty Appcast"
+   git push origin gh-pages
+   ```
+
+   Then turn on GitHub Pages from `gh-pages` (root) under Settings → Pages, and check that `https://connordodge.github.io/open_memex/appcast.xml` serves the file.
+
+### The `appcast` job
+
+Every Release publishes its own Appcast item; there is no manual step. The `release` job decodes the private key to `$RUNNER_TEMP/sparkle-ed-key` (deleted at the end of the job), `build.sh` signs the stapled DMG with it, and right after **Build, sign and notarize** the job uploads the DMG's signature and byte length (`dist/Open-Memex-<ver>-arm64.dmg.edsig` and `.length`) as the workflow artifact `appcast-input`. **Publish the Release** is still its last step.
+
+The `appcast` job runs only after the `release` job succeeds. It has no environment and reads no secret: it pushes with the run's `github.token`. It checks out the tag, downloads `appcast-input`, checks that `gh-pages` exists, checks out `gh-pages`, runs the generator from the tag's checkout and pushes one commit to `gh-pages`:
+
+```bash
+scripts/release/generate_appcast.sh --version <ver> --input <appcast-input dir> --appcast <gh-pages checkout>/appcast.xml
+```
+
+The generator takes the build number from `app/pubspec.yaml`, the notes from `release-notes/v<ver>.md` and the minimum macOS version from the app's deployment target. It keys each item on the version (`sparkle:shortVersionString`): running it again for a version replaces that version's item, and every other Release's item is kept. Only one `appcast` job runs at a time, and GitHub keeps only one waiting behind it: if you push a third tag while one `appcast` job runs and another waits, GitHub cancels the waiting one. Its Release then has no Appcast item; recover it as in [If the appcast job fails](#if-the-appcast-job-fails).
+
+GitHub Pages caches the file for about 10 minutes, so a new item can take that long to reach the app.
+
+### If the appcast job fails
+
+The Release is already published, so do not delete it or its tag. Fix the cause (for example, create `gh-pages` as in step 4 of the one-time setup if the job says it is missing), then open the workflow run on the Actions tab and use **Re-run failed jobs**. That runs only the `appcast` job again, with the same `appcast-input` signature and length, while the run's artifacts are kept (90 days by default). Never use Re-run all jobs: the `release` job would fail at creating the Release, and a rebuilt DMG would not match the published asset's signature.
+
+### Rotating the key
+
+To replace the EdDSA keypair, mint a new one (one-time setup step 1, with a new export file), put its public key in `sparkleEdPublicKey` (step 3) and ship that build **signed with the old key**: leave `SPARKLE_ED_PRIVATE_KEY_BASE64` holding the old key for that Release, so installed apps, which trust only the old key, accept it. After that Release is published, replace the secret with the new private key (step 2). Every later Release is signed with the new key, which the rotated build trusts.

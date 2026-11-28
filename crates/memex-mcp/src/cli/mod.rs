@@ -11,6 +11,7 @@ use memex_core::MemexError;
 use serde_json::{json, Value};
 
 pub mod append;
+pub mod attach;
 pub mod backup;
 pub mod echoes;
 pub mod embeddings;
@@ -25,6 +26,7 @@ pub mod read_only;
 pub mod restore;
 pub mod revisions;
 pub mod rm;
+pub mod search;
 pub mod serve;
 pub mod settings;
 pub mod tag;

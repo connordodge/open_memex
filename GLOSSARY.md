@@ -35,7 +35,7 @@ The note editor's way of showing a note body with its markdown formatting render
 _Avoid_: WYSIWYG, rich text, preview pane, rendered mode
 
 **Editor row**:
-One editable field inside a text segment of the live-preview editor: an item row holds one list item, task or quote line with its marker in a left column, and a prose row holds a run of consecutive lines that are not item lines. Not the same thing as a block.
+One row of a text segment in the live-preview editor: an item row holds one list item, task or quote line with its marker in a left column, and a prose row holds a run of consecutive lines that are not item lines. At any moment an editor row is either the active row or an idle row. Not the same thing as a block.
 _Avoid_: block, block field, line field
 
 **Indent / Outdent**:
@@ -161,6 +161,12 @@ The folder a vault's backups are written into: a folder in iCloud Drive, Google 
 **Restore**:
 Making a new vault folder from a backup. A restore never changes a vault that already exists, and the new vault keeps the backed-up vault's id.
 
+## Attachments (#121)
+
+**Attachment**:
+A file copied into a vault's `objects/` folder, stored once per content, and referenced from a note body by a markdown image or link whose target is its vault-relative path.
+_Avoid_: asset, media, embed (images are not transclusions), upload
+
 ## Spelling (#392)
 
 **Learned word**:
@@ -172,6 +178,16 @@ _Avoid_: dictionary word, custom word
 **Table**:
 A GitHub-flavoured markdown pipe table in a note body: a header line, a delimiter line (such as `|---|:-:|`) and zero or more body lines. Live preview shows it as one table row of the editor: a grid, or its raw lines while revealed.
 _Avoid_: grid (for the markdown), spreadsheet
+
+## Long notes (#120)
+
+**Active row**:
+The one editor row of a text segment that is shown as an editable field: the row whose field has keyboard focus while the segment is focused (a selection that crosses rows keeps it in the row the selection started from), otherwise the row holding the segment's selection extent.
+_Avoid_: focused row, live row, editing row
+
+**Idle row**:
+Any editor row that is not the active row, shown as static text laid out exactly as its field would be, selection highlight, revealed markup, spelling squiggles and find highlights included. It becomes the active row when the caret moves into it.
+_Avoid_: static row, resting row, read-only row
 
 ## Agent note edits (#1)
 
@@ -195,6 +211,44 @@ _Avoid_: open (for staying in the tab), jump, go to
 The ordered record of what one tab has shown, which Back walks through. Each tab has its own.
 _Avoid_: navigation stack, breadcrumbs, recents
 
+## Outline (#54)
+
+**Outline**:
+The list of a note's headings, in document order and indented by heading level, that shows the note's structure and jumps to a section.
+_Avoid_: table of contents, TOC, contents, headings panel
+
+## Command palette (#56)
+
+**Command bar**:
+The sidebar row, labelled `search · ask · run`, that opens the Command palette.
+_Avoid_: search bar, omnibar, quick open, quick switcher, spotlight
+
+**Command palette**:
+The panel the Command bar or ⌘K opens: one input, a result list and a preview of the selected result. Typing finds app commands by name, notes and canvases by title, and Passages of note text.
+_Avoid_: search bar, omnibar, quick open, quick switcher, spotlight
+
+**Passage**:
+A stretch of note text the Command palette finds by keyword and by meaning (Semantic recall).
+_Avoid_: snippet
+
+## Find in note (#55)
+
+**Find in note**:
+Finding every occurrence of a query within the open note, from the Find bar.
+_Avoid_: find-in-page, search (finding across the vault is the Command palette's job)
+
+**Find bar**:
+The floating box in the note editor that holds the query field, the match counter, and the previous, next and close buttons.
+_Avoid_: search bar, find panel
+
+**Match**:
+One occurrence of the Find bar's query in the open note.
+_Avoid_: hit, result
+
+**Current match**:
+The match the person has stepped to, drawn more strongly than the other matches and kept in view.
+_Avoid_: selected match, active result
+
 ## Releases (#356)
 
 **Release**:
@@ -208,3 +262,11 @@ _Avoid_: embedded CLI, helper, sidecar
 **Leak check**:
 The check that fails when a file, diff or build artifact contains a home directory path, a personal email address or another private identifier that must not go public.
 _Avoid_: secret scan (secrets are only one kind of leak), audit
+
+**Self-update**:
+The app's own flow that finds a newer Release, downloads and verifies it, and replaces the installed `Open Memex.app` with it once the person chooses to relaunch.
+_Avoid_: auto-update, upgrade, patch
+
+**Appcast**:
+The signed feed of Releases, in Sparkle's appcast XML format, that Self-update reads to learn the newest version and where to download it.
+_Avoid_: update feed, manifest, releases.json

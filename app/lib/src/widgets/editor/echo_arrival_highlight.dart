@@ -8,6 +8,7 @@ import '../../editor/editor_rows.dart';
 import '../../editor/segments.dart';
 import '../../theme/colors.dart';
 import 'line_boxes.dart';
+import 'segment_view.dart' show textSlotLines;
 
 // Open-at-passage (Spec #391 req 27, WI #428): where an opened echo lands in
 // the segmented editor, and the brief background highlight shown there.
@@ -86,11 +87,11 @@ EchoArrival? locateEchoArrival(
         // A daily person section can end in stray text moved from below the
         // marker: only its prefix shared with the body is at body offsets.
         final limit = daily ? _sharedPrefix(text, contentMd) : text.length;
-        if (offset < at + limit) return _inText(text, s, offset - at);
+        if (offset < at + limit) return _inSegment(segments, s, offset - at);
         at += text.length;
       case TransclusionSegment(:final raw):
         if (offset < at + raw.length) {
-          return EchoArrival._(key: Key('excerpt-card-$s'), segment: s);
+          return _inSegment(segments, s, offset - at);
         }
         at += raw.length;
       case FooterSegment():
@@ -98,6 +99,39 @@ EchoArrival? locateEchoArrival(
     }
   }
   return null;
+}
+
+/// The editor widget holding UTF-16 offset [local] of segment [segment] of
+/// `split(contentMd)` for a note of [role], as [locateEchoArrival] gives it.
+/// The segment offset is taken as given: a daily person segment's stray text
+/// past its prefix shared with the body is found too. Null when [segment] is
+/// no text segment or card, or [local] lies outside its text.
+EchoArrival? locateInSegment(
+  String contentMd,
+  int segment,
+  int local, {
+  String? role,
+}) => _inSegment(
+  split(contentMd, isDaily: role == 'daily', noteFooter: role != 'guide'),
+  segment,
+  local,
+);
+
+/// [locateInSegment] over [segments], `split` already.
+EchoArrival? _inSegment(List<Segment> segments, int segment, int local) {
+  if (segment < 0 || segment >= segments.length || local < 0) return null;
+  return switch (segments[segment]) {
+    TextSegment(:final text) when local < text.length => _inText(
+      text,
+      segment,
+      local,
+    ),
+    TransclusionSegment(:final raw) when local < raw.length => EchoArrival._(
+      key: Key('excerpt-card-$segment'),
+      segment: segment,
+    ),
+    _ => null,
+  };
 }
 
 EchoArrival? _inText(String text, int segment, int offset) {
@@ -153,19 +187,16 @@ int _sharedPrefix(String a, String b) {
   }
   final whole = Rect.fromLTRB(left, 0, right, size.height);
   if (arrival.kind != RowKind.prose) return (band: whole, anchor: whole);
-  final editable = findRenderEditable(row);
-  if (editable == null ||
-      !editable.hasSize ||
-      editable.plainText != arrival.rowText) {
-    return (band: whole, anchor: whole);
-  }
-  final lines = RenderEditableLineBoxes(editable).lines;
-  if (lines.isEmpty) return (band: whole, anchor: whole);
+  // The row's text through the row-geometry accessor's text-slot half
+  // (WI #127): its field's, or a RichText's standing in for it.
+  final text = textSlotLines(row, arrival.rowText);
+  if (text == null) return (band: whole, anchor: whole);
+  final (:boxes, :lines) = text;
   final block = _passageBlock(arrival.rowText, arrival.local);
   final first = lineHolding(lines, block.start);
   final last = lineHolding(lines, block.end);
-  double y(double editableY) =>
-      row.globalToLocal(editable.localToGlobal(Offset(0, editableY))).dy;
+  double y(double textY) =>
+      row.globalToLocal(boxes.box.localToGlobal(Offset(0, textY))).dy;
   final top = identical(first, lines.first) ? 0.0 : y(first.top);
   final bottom = identical(last, lines.last) ? size.height : y(last.bottom);
   final firstBottom = identical(first, lines.last)

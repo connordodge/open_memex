@@ -1,21 +1,25 @@
 import 'agents_access.dart';
+import 'attachments_access.dart';
 import 'canvas_access.dart';
 import 'daily_access.dart';
 import 'echoes_access.dart';
 import 'feedback_access.dart';
 import 'graph_access.dart';
 import 'notes_access.dart';
+import 'search_access.dart';
 import 'tags_access.dart';
 import 'topics_access.dart';
 import 'words_access.dart';
 
 export 'agents_access.dart';
+export 'attachments_access.dart';
 export 'canvas_access.dart';
 export 'daily_access.dart';
 export 'echoes_access.dart';
 export 'feedback_access.dart';
 export 'graph_access.dart';
 export 'notes_access.dart';
+export 'search_access.dart';
 export 'tags_access.dart';
 export 'words_access.dart';
 export 'topics_access.dart';
@@ -38,6 +42,14 @@ abstract interface class VaultAccess {
   GraphAccess get graph;
   TagsAccess get tags;
   WordsAccess get words;
+
+  /// Vault search for the Command palette (Spec #59 req 39). An amendment
+  /// to the frozen interface (#74).
+  SearchAccess get search;
+
+  /// Attachments of the open vault (Spec #123 V1). An amendment to the
+  /// frozen interface.
+  AttachmentsAccess get attachments;
 
   /// The vault's opaque revision (Req 22, D9; D4). It changes after every
   /// committed write by any writer except vector-only writes; it may also

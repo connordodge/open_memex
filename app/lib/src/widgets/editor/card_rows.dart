@@ -4,7 +4,10 @@ import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../editor/attachment_ref.dart'
+    show AttachmentRef, parseAttachmentReference;
 import '../../editor/editor_rows.dart';
+import '../../editor/find_in_note.dart';
 import '../../editor/markdown_inline.dart';
 import '../../editor/markdown_lines.dart';
 import '../../editor/markdown_table.dart' show splitTableLine;
@@ -13,7 +16,15 @@ import '../../editor/tag_grammar.dart' show fencedRowLines, normalizeTagName;
 import '../../state/tags_browse_state.dart';
 import '../../theme/colors.dart';
 import '../../theme/typography.dart';
+import '../../state/find_in_note_state.dart';
+import '../find/find_highlights.dart';
+import '../find/find_in_note_host.dart'
+    show FindActiveScope, findFieldDecoration;
+import '../find/find_keys.dart';
+import 'attachment_row.dart';
 import 'editor_row.dart';
+import 'excerpt_card.dart';
+import 'find_decoration.dart';
 import 'line_boxes.dart';
 import 'live_preview_controller.dart';
 import 'live_preview_decorations.dart';
@@ -47,15 +58,37 @@ import 'table_grid.dart';
 ///   controller unless the row holds a tag (markers always hidden, never
 ///   revealed). Its text is painted by the grid only. Several tables in one
 ///   excerpt are separate rows, so each is its own grid, stacked with no gap.
+/// - An attachment row (WI #144; Spec #123 R39, D6, D7) shows V3's
+///   [AttachmentBlock] in place of its markdown, under Key
+///   `card-attachment-<r>` directly inside `card-row-<r>`, aligned to the
+///   row's start: an image scaled to the card's width and at most
+///   [cardAttachmentImageMaxHeight] tall, or the compact file card, with the
+///   block's open, menu, missing and offline behaviour and no caret callback.
 /// - A row holding a live `#tag` (WI #247, ruling D51) adds [_CardTagRegion]:
-///   a click on the tag opens Tags mode. Every other row, a table row
-///   included, adds no listener, gesture detector or mouse region (D14).
+///   a click on the tag opens Tags mode. An attachment row's block takes
+///   pointer input inside itself only (R39's one exception). Every other
+///   row, a table row included, adds no listener, gesture detector or mouse
+///   region (D14).
 /// - Otherwise display only: no caret, focus, toggling or link clicks.
 class CardRows extends StatelessWidget {
-  const CardRows({super.key, required this.text});
+  const CardRows({
+    super.key,
+    required this.text,
+    this.segment,
+    this.active = true,
+  });
 
   /// The card's rendered excerpt text (`RenderedExcerpt.text`).
   final String text;
+
+  /// The card's `split()` index, for its rows' find highlights (#61 F3,
+  /// Key `find-highlights-card-<segment>-<r>`); null: the enclosing
+  /// `ExcerptCard`'s index.
+  final int? segment;
+
+  /// Whether the card belongs to the active editor (#61 F3, F6 wires it):
+  /// its find highlights paint only while true.
+  final bool active;
 
   /// The card's base text style, as built (pack #172: `fg1`).
   static TextStyle _baseStyle() =>
@@ -78,6 +111,10 @@ class CardRows extends StatelessWidget {
     final fenced = fencedRowLines(text, specs);
     final scaler = MediaQuery.textScalerOf(context);
     final base = _baseStyle();
+    final seg =
+        segment ?? context.findAncestorWidgetOfExactType<ExcerptCard>()?.index;
+    // The excerpt card's editor says whether it is the active one (#61 F6).
+    final on = active && FindActiveScope.of(context);
     bool blank(RowSpec spec) =>
         spec.kind == RowKind.prose && spec.textLength == 0;
     // The rows between the leading and the trailing empty prose rows.
@@ -94,7 +131,7 @@ class CardRows extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         for (var r = first; r <= last; r++)
-          _row(r, specs[r], geometries[r], fenced[r], base, scaler),
+          _row(r, specs[r], geometries[r], fenced[r], base, scaler, seg, on),
       ],
     );
   }
@@ -106,6 +143,8 @@ class CardRows extends StatelessWidget {
     List<bool> fenced,
     TextStyle base,
     TextScaler scaler,
+    int? seg,
+    bool on,
   ) {
     final rowText = text.substring(spec.textStart, spec.textEnd);
     final quote = spec.kind == RowKind.quote;
@@ -120,25 +159,49 @@ class CardRows extends StatelessWidget {
     );
     Widget tagged(_TagRowBuilder build) =>
         tags.isEmpty ? build(null) : _CardTagRegion(tags: tags, builder: build);
+    if (cardAttachmentReference(text, spec) case final reference?) {
+      return KeyedSubtree(
+        key: ValueKey('card-row-$r'),
+        child: Align(
+          alignment: AlignmentDirectional.topStart,
+          child: KeyedSubtree(
+            key: ValueKey('card-attachment-$r'),
+            child: AttachmentBlock(
+              reference: reference,
+              name: attachmentShownName(rowText.trim(), reference),
+              imageMaxHeight: cardAttachmentImageMaxHeight,
+            ),
+          ),
+        ),
+      );
+    }
     if (spec.kind == RowKind.table) {
       return KeyedSubtree(
         key: ValueKey('card-row-$r'),
-        child: tagged(
-          (links) => TableGrid(
+        child: tagged((links) {
+          final grid = TableGrid(
             key: ValueKey('card-table-$r'),
             text: rowText,
             style: style,
             links: links,
             headerBand: OmColors.surface4,
             fenced: fenced,
-          ),
-        ),
+          );
+          // Its cells' find highlights (#61 F3, D8).
+          return seg == null
+              ? grid
+              : FindGridScope(
+                  segment: seg,
+                  textStart: spec.textStart,
+                  active: on,
+                  cardRow: r,
+                  child: grid,
+                );
+        }),
       );
     }
-    final rich = tagged(
-      (links) => _RowText(
-        key: ValueKey('card-row-text-$r'),
-        child: RichText(
+    RichText rowRich(LivePreviewController? links, FindDecoration? find) =>
+        RichText(
           textScaler: scaler,
           // As the body field's EditableText does with its strut.
           strutStyle: livePreviewStrut(
@@ -155,12 +218,55 @@ class CardRows extends StatelessWidget {
             cmdHover: links?.cmdHover,
             codeRow: codeRow,
             fenced: fenced,
+            // Find in note's ink in the row (#61 F6, D7); cards never reveal.
+            inkRanges: find?.inkRanges ?? const <TextRange>[],
+            current: find?.current,
           ),
-        ),
+        );
+    final plain = tagged(
+      (links) => _RowText(
+        key: ValueKey('card-row-text-$r'),
+        child: seg == null || !on
+            ? rowRich(links, null)
+            : Consumer(
+                builder: (context, ref, _) => rowRich(
+                  links,
+                  ref.watch(
+                    findInNoteProvider.select(
+                      (state) => findFieldDecoration(
+                        state,
+                        segment: seg,
+                        kind: FindSourceKind.card,
+                        start: spec.textStart,
+                        end: spec.textEnd,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
       ),
     );
+    // The row's find highlights, under its text (#61 F3).
+    final rich = seg == null
+        ? plain
+        : FindParagraphHighlights(
+            layerKey: findCardHighlightsKey(seg, r),
+            ranges: (state) => on
+                ? findPaintRanges(
+                    state,
+                    segment: seg,
+                    kind: FindSourceKind.card,
+                    start: spec.textStart,
+                    end: spec.textEnd,
+                  )
+                : const [],
+            layout: rowText,
+            child: plain,
+          );
     final Widget row = switch (spec.kind) {
-      RowKind.prose => rich,
+      // An attachment row whose text is no reference (splitRows makes none)
+      // shows as prose; a reference shows its block above.
+      RowKind.prose || RowKind.attachment => rich,
       RowKind.code => Padding(
         padding: EdgeInsets.only(
           left: codeTextInsetLeft,
@@ -203,6 +309,20 @@ class CardRows extends StatelessWidget {
     );
   }
 }
+
+/// The tallest an excerpt card's image shows (R39), in logical pixels.
+const double cardAttachmentImageMaxHeight = 240;
+
+/// The reference an excerpt card's row [spec] of [text] shows as V3's
+/// [AttachmentBlock] (WI #144; R39), or null when the row shows its text:
+/// an attachment row whose trimmed text parses as a reference. A card
+/// shows no text for such a row, so Find skips it in cards (D27).
+AttachmentRef? cardAttachmentReference(String text, RowSpec spec) =>
+    spec.kind == RowKind.attachment
+    ? parseAttachmentReference(
+        text.substring(spec.textStart, spec.textEnd).trim(),
+      )
+    : null;
 
 /// A tag a click on a card row opens: its [span] in the row's text and its
 /// normalized [name].

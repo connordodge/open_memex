@@ -760,11 +760,14 @@ void main() {
         spelling: _withGuesses(const ['ten', 'the']),
       );
       final segment = segmentEditingAt(tester, 0);
+      // TEST-CHANGE (WI #132, Req 38): activate the table row first.
+      await activateSegmentRow(tester, 0, 1);
       await tester.showKeyboard(tableRowField(0, 1));
       await tester.pump();
       segment.select(TextSelection.collapsed(offset: table.indexOf('teh') + 1));
       await m.e.advance(const Duration(seconds: 1));
       await m.e.advance(const Duration(seconds: 1));
+      await activateSegmentRow(tester, 0, 0);
       await tester.showKeyboard(tableRowField(0, 0));
       await tester.pump();
       segment.select(const TextSelection.collapsed(offset: 2));

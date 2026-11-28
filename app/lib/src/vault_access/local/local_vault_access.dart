@@ -1,8 +1,11 @@
 import '../../db.dart';
 import '../../memex_cli.dart';
+import '../../state/file_revealer.dart';
+import '../../state/url_opener.dart';
 import '../../state/vault_state.dart' show requiredVaultSchemaVersion;
 import '../vault_access.dart';
 import 'agents.dart';
+import 'attachments.dart';
 import 'canvas.dart';
 import 'daily.dart';
 import 'feedback.dart';
@@ -13,6 +16,7 @@ import 'topics.dart';
 import 'words.dart';
 
 export 'agents.dart';
+export 'attachments.dart';
 export 'canvas.dart';
 export 'daily.dart';
 export 'feedback.dart';
@@ -27,7 +31,9 @@ export 'words.dart';
 /// no [db] gives today's empty reads, no [cli] makes [canWrite] false.
 ///
 /// A domain argument (e.g. [notes]) replaces that domain's default
-/// `Local<D>Access`; tests pass doubles that extend it (D21).
+/// `Local<D>Access`; tests pass doubles that extend it (D21). [urlOpener]
+/// and [fileRevealer] go to the default [attachments] (`urlOpenerProvider`
+/// and `fileRevealerProvider` in the app; null: the system ones).
 class LocalVaultAccess implements VaultAccess {
   LocalVaultAccess({
     required this.vaultPath,
@@ -43,6 +49,10 @@ class LocalVaultAccess implements VaultAccess {
     LocalGraphAccess? graph,
     LocalTagsAccess? tags,
     LocalWordsAccess? words,
+    LocalSearchAccess? search,
+    LocalAttachmentsAccess? attachments,
+    UrlOpener? urlOpener,
+    FileRevealer? fileRevealer,
   }) : notes =
            notes ?? LocalNotesAccess(vaultPath: vaultPath, db: db, cli: cli),
        agents = agents ?? LocalAgentsAccess(vaultPath: vaultPath, db: db),
@@ -59,7 +69,16 @@ class LocalVaultAccess implements VaultAccess {
        graph = graph ?? LocalGraphAccess(vaultPath: vaultPath, db: db),
        tags = tags ?? LocalTagsAccess(vaultPath: vaultPath, db: db, cli: cli),
        words =
-           words ?? LocalWordsAccess(vaultPath: vaultPath, db: db, cli: cli);
+           words ?? LocalWordsAccess(vaultPath: vaultPath, db: db, cli: cli),
+       search = search ?? LocalSearchAccess(vaultPath: vaultPath, cli: cli),
+       attachments =
+           attachments ??
+           LocalAttachmentsAccess(
+             vaultPath: vaultPath,
+             cli: cli,
+             urlOpener: urlOpener,
+             fileRevealer: fileRevealer,
+           );
 
   final String vaultPath;
   final VaultDb? db;
@@ -85,6 +104,10 @@ class LocalVaultAccess implements VaultAccess {
   final LocalTagsAccess tags;
   @override
   final LocalWordsAccess words;
+  @override
+  final LocalSearchAccess search;
+  @override
+  final LocalAttachmentsAccess attachments;
 
   /// The revision of a local vault with no database handle. Constant: with no
   /// handle every read is empty, so there is nothing to reload.

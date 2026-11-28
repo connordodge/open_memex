@@ -35,13 +35,14 @@ import 'package:open_memex_app/src/theme/colors.dart';
 import 'package:open_memex_app/src/theme/typography.dart';
 import 'package:open_memex_app/src/widgets/editor/card_rows.dart';
 import 'package:open_memex_app/src/widgets/editor/live_preview_controller.dart';
-import 'package:open_memex_app/src/widgets/editor/line_boxes.dart';
 import 'package:open_memex_app/src/widgets/editor/live_preview_styles.dart';
 import 'package:open_memex_app/src/widgets/editor/marker_column.dart';
 import 'package:open_memex_app/src/widgets/editor/paragraph_line_boxes.dart';
 import 'package:open_memex_app/src/widgets/editor/segmented_body.dart';
 
 import '../robots/segmented_editor_robot.dart';
+import '../support/editor_rows_probe.dart' show rowBoxesOf;
+import '../support/segment_editing_finder.dart';
 import '../support/app_harness.dart';
 import '../support/daily_seed.dart';
 import '../support/fake_memex_cli.dart';
@@ -807,9 +808,9 @@ void main() {
 
           // The editor body row for the same text is as tall.
           await _wi172PumpBody(tester, text);
-          final body = RenderEditableLineBoxes(
-            _wi172BodyEditable(tester, 0),
-          ).lines;
+          // (TEST-CHANGE, WI #132: a row's text is a field only while it is
+          // the active row; its geometry is read through the rows host.)
+          final body = rowBoxesOf(tester, 0, 0).lines;
           expect(body, hasLength(1), reason: '$why: one body line');
           expect(
             body.single.bottom - body.single.top,
@@ -1751,9 +1752,8 @@ void main() {
         );
 
         await _wi172PumpBody(tester, text);
-        final editable = _wi172BodyEditable(tester, 1);
         final body = [
-          for (final line in RenderEditableLineBoxes(editable).lines)
+          for (final line in rowBoxesOf(tester, 0, 1).lines)
             line.bottom - line.top,
         ];
         expect(body, hasLength(card.length));
@@ -1817,16 +1817,26 @@ void main() {
               in card.entries) {
             final why = '$name row $r (${specs[r].kind}) "$plain"';
             expect(_wi172BodyRow(r), findsOneWidget, reason: '$why: body');
-            final editable = _wi172BodyEditable(tester, r);
-            expect(editable.text!.toPlainText(), plain, reason: '$why: text');
+            // TEST-CHANGE (WI #132, Req 38): the row's text is a field only
+            // while it is the active row, else an idle paragraph.
+            final editable = _wi172BodyBox(tester, r);
             expect(
-              strut,
-              editable.strutStyle,
-              reason: '$why: the strut of the body field',
+              segmentRowSpan(tester, 0, r).toPlainText(),
+              plain,
+              reason: '$why: text',
             );
-            expect(editable.size.height, closeTo(height, 0.01), reason: why);
+            expect(strut, switch (editable) {
+              final RenderEditable e => e.strutStyle,
+              final RenderParagraph p => p.strutStyle,
+              _ => null,
+            }, reason: '$why: the strut of the body field');
+            expect(
+              tester.getSize(_wi172BodyRow(r)).height,
+              closeTo(height, 0.01),
+              reason: why,
+            );
             final body = _wi172GlyphLines(
-              editable.getBoxesForSelection,
+              _wi172TightBoxes(editable),
               plain.length,
             );
             expect(body, hasLength(boxes.length), reason: '$why: extents');
@@ -2225,23 +2235,29 @@ Future<void> _wi172PumpBody(WidgetTester tester, String text) async {
 /// Editor body row [r] of the first text segment.
 Finder _wi172BodyRow(int r) => find.byKey(Key('editor-row-0-$r'));
 
-/// The RenderEditable of editor body row [r].
-RenderEditable _wi172BodyEditable(WidgetTester tester, int r) {
-  RenderEditable? found;
-  void visit(RenderObject node) {
-    if (found != null) return;
-    if (node is RenderEditable) {
-      found = node;
-    } else {
-      node.visitChildren(visit);
-    }
-  }
+/// The box laying out editor body row [r]'s text: its field's
+/// `RenderEditable` while it is the active row, else its idle paragraph
+/// (WI #132, Req 38).
+RenderBox _wi172BodyBox(WidgetTester tester, int r) =>
+    segmentRowTextBox(tester, 0, r);
 
-  visit(tester.renderObject(_wi172BodyRow(r)));
-  if (found == null) throw TestFailure('No RenderEditable in body row $r');
-  return found!;
-}
+/// [box]'s tight glyph boxes of a selection. An editor row's field measures
+/// max-height boxes (WI #126: its line boxes are read from them); this
+/// compares tight glyph extents, so a field is read tight and its style
+/// restored.
+List<TextBox> Function(TextSelection) _wi172TightBoxes(RenderBox box) =>
+    switch (box) {
+      final RenderEditable e => (selection) {
+        final style = e.selectionHeightStyle;
+        e.selectionHeightStyle = ui.BoxHeightStyle.tight;
+        final boxes = e.getBoxesForSelection(selection);
+        e.selectionHeightStyle = style;
+        return boxes;
+      },
+      final RenderParagraph p => p.getBoxesForSelection,
+      _ => throw TestFailure('$box lays out no text'),
+    };
 
 /// The laid-out height of editor body row [r]'s field.
 double _wi172BodyFieldHeight(WidgetTester tester, int r) =>
-    _wi172BodyEditable(tester, r).size.height;
+    tester.getSize(_wi172BodyRow(r)).height;

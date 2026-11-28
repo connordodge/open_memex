@@ -145,9 +145,7 @@ String? spellIssuesHint(
 
 /// Whether [controller]'s field is an unrevealed table row's (offstage).
 bool _hidden(TextEditingController controller) =>
-    controller is LivePreviewController &&
-    controller.tableRow &&
-    !controller.tableRevealed;
+    controller is LivePreviewController && controller.textHidden;
 
 /// [issue]'s range inside a text of [length], or null when nothing of it is.
 TextRange? _clamped(SpellIssue issue, int length) {
@@ -324,17 +322,29 @@ class _RenderSquiggles extends RenderBox {
   void paint(PaintingContext context, Offset offset) {
     debugSpellSquigglePaints++;
     _segmentConsulted = false;
-    final editable = findRenderEditable(_stack);
-    if (editable == null || !editable.hasSize) return;
-    _follow(editable.offset);
+    // The row's text through the row-geometry accessor (WI #127): its
+    // field's or a RichText's standing in for it; outside a segment, the
+    // text under the stack.
+    final host = _host;
+    final index = _index;
+    final boxes =
+        (host == null || index == null ? null : host.rowBoxes(index)) ??
+        textSlotBoxes(_stack);
+    if (boxes == null) return;
+    // A field's text scrolls; a RichText's never does.
+    if (boxes.box case final RenderEditable field) _follow(field.offset);
     final issues = _issues.value;
     if (issues.isEmpty || _hidden(_controller)) return;
 
-    final length = editable.plainText.length;
+    // The laid-out text, read without a walk of its lines (WI #126).
+    final text = switch (boxes.box) {
+      final RenderEditable field => field.plainText,
+      final RenderParagraph paragraph => paragraph.text.toPlainText(),
+      _ => _controller.text,
+    };
+    final length = text.length;
     final selection = _controller.selection;
-    final boxes = RenderEditableLineBoxes(editable);
-    final lines = boxes.lines;
-    final toHere = editable.getTransformTo(this);
+    final toHere = boxes.box.getTransformTo(this);
     final canvas = context.canvas;
     for (final issue in issues) {
       final range = _clamped(issue, length);
@@ -347,9 +357,9 @@ class _RenderSquiggles extends RenderBox {
           SpellIssueKind.spelling => OmColors.danger,
           SpellIssueKind.grammar => OmColors.info,
         };
-      for (final rect in boxes.boxesFor(range)) {
-        final line = _lineOf(lines, rect);
-        if (line == null || rect.width <= 0) continue;
+      // Each item measures only its own lines (WI #126).
+      for (final (rect, line) in lineRectsOf(boxes, range, text)) {
+        if (rect.width <= 0) continue;
         final left = MatrixUtils.transformPoint(
           toHere,
           Offset(rect.left, line.baseline),
@@ -379,16 +389,6 @@ class _RenderSquiggles extends RenderBox {
     if (identical(scroll, _scroll)) return;
     _scroll?.removeListener(markNeedsPaint);
     _scroll = scroll..addListener(markNeedsPaint);
-  }
-
-  /// The line of [lines] whose box spans [rect] (a `boxesFor` rect spans
-  /// its line box's full height).
-  static LineBox? _lineOf(List<LineBox> lines, Rect rect) {
-    final y = rect.center.dy;
-    for (final line in lines) {
-      if (y >= line.top && y < line.bottom) return line;
-    }
-    return null;
   }
 
   /// A wavy band [_squiggleThickness] tall from [left] to [right], its top

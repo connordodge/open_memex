@@ -33,6 +33,7 @@ import 'package:open_memex_app/src/widgets/editor/live_preview_decorations.dart'
 
 import '../support/font_fetch_hold.dart';
 import '../support/mac_editing.dart';
+import '../support/segment_editing_finder.dart';
 import '../support/table_harness.dart';
 
 /// The prose line above the table (row 0).
@@ -107,7 +108,7 @@ void _expectRows(String text, List<RowKind> kinds) {
 
 /// The span field row [r] of segment 0 lays out (its render editable's).
 InlineSpan _fieldSpan(WidgetTester tester, int r) =>
-    tableRowFieldState(tester, 0, r).renderEditable.text!;
+    segmentRowSpan(tester, 0, r); // idle rows too (WI #132, Req 38)
 
 /// The effective style of the code unit at [offset] of [root]: every
 /// ancestor's style merged down to the leaf holding it.

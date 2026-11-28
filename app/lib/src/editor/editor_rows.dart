@@ -6,6 +6,7 @@
 // every widget edit is a [SegmentEdit]. Offsets are UTF-16 code units into
 // one text segment's text; no boundary falls inside a surrogate pair (D4).
 
+import 'attachment_ref.dart';
 import 'markdown_lines.dart';
 
 /// The kind of an editor row (Spec R9).
@@ -35,6 +36,15 @@ enum RowKind {
   /// A markdown table (Spec #197 R8), from its header line through its last
   /// body line. Keeps its interior terminators.
   table,
+
+  /// An attachment line (Spec #123 R23, R32, ruling D1): a plain line that
+  /// is exactly one attachment reference, leading and trailing whitespace
+  /// aside (`parseAttachmentReference`), never inside an item, quote, fence,
+  /// table or frontmatter. Its row-kind presenter (`attachment_row.dart`)
+  /// shows it as an image row or a file card. Its text is the whole line,
+  /// whitespace included; it ends a numbered run and a parent search like a
+  /// prose row.
+  attachment,
 }
 
 /// A selection inside one text segment, in segment offsets.
@@ -141,8 +151,8 @@ class RowSpec {
   final int depth;
 
   /// Index of the parent row (Spec R12): the nearest earlier item row with a
-  /// smaller [indent], searching back until the first prose, code or table
-  /// row. Null for depth 0 and for prose, code and table rows.
+  /// smaller [indent], searching back until the first prose, code, table or
+  /// attachment row. Null for depth 0 and for every row that is not an item.
   final int? parent;
 
   /// Whether a [RowKind.task] row is done (`[x]` or `[X]`).
@@ -153,8 +163,8 @@ class RowSpec {
 
   /// For a [RowKind.numbered] row, the index of the first row of its numbered
   /// run (Spec R11): a maximal sequence of numbered rows at the same depth,
-  /// ended by a prose row (a blank line included), a code or table row, or
-  /// a shallower item. Rows
+  /// ended by a prose row (a blank line included), a code, table or
+  /// attachment row, or a shallower item. Rows
   /// of one run share this value. Null for every other kind.
   final int? numberedRun;
 
@@ -190,6 +200,11 @@ class RowSpec {
       'run $numberedRun/$runDigits)';
 }
 
+/// Test-only work counter: how many times [splitRows] ran. Plain top-level
+/// int (pure Dart: no `package:meta`, ruling D9). Never read by production
+/// code.
+int debugSplitRowsCalls = 0;
+
 /// Splits one text segment into editor rows (Spec R9, R39).
 ///
 /// Each item line (bullet, numbered, task, quote; [classifyLines]) is its own
@@ -198,7 +213,9 @@ class RowSpec {
 /// [RowKind.code] row; an unclosed fence runs to the segment end. A table,
 /// header line through last body line, is one [RowKind.table] row (Spec
 /// #197 R8) whose text starts at its line start and keeps its interior
-/// terminators, like a code row. Every maximal run of other lines is one
+/// terminators, like a code row. A plain line that is exactly one attachment
+/// reference, whitespace aside, is one [RowKind.attachment] row holding the
+/// whole line (Spec #123 R23, R32). Every maximal run of other lines is one
 /// [RowKind.prose] row. Rows tile the
 /// text: the first starts at 0, each starts where the previous ends, and the
 /// last ends at `text.length`. A segment ending in a terminator ends in a
@@ -206,6 +223,7 @@ class RowSpec {
 /// a closed fence); `''` is one empty prose row. [atSegmentStart] is passed
 /// to [classifyLines] (leading frontmatter is prose).
 List<RowSpec> splitRows(String text, {required bool atSegmentStart}) {
+  debugSplitRowsCalls++;
   final lines = classifyLines(text, atSegmentStart: atSegmentStart);
   final rows = <RowSpec>[];
   // Indices of the open numbered runs by depth (R11).
@@ -218,10 +236,14 @@ List<RowSpec> splitRows(String text, {required bool atSegmentStart}) {
       // A code row runs from its opening fence line through its closing one
       // (or the segment end); a table row from its header line through its
       // last body line; a prose row is a maximal run of the rest.
-      final block = _blockKinds[line.kind] ?? RowKind.prose;
+      final block =
+          _blockKinds[line.kind] ??
+          (_isAttachmentLine(text, line) ? RowKind.attachment : RowKind.prose);
       var last = i;
       while (last + 1 < lines.length &&
-          _continues(block, lines[last].kind, lines[last + 1].kind)) {
+          _continues(block, lines[last].kind, lines[last + 1].kind) &&
+          !(block == RowKind.prose &&
+              _isAttachmentLine(text, lines[last + 1]))) {
         last++;
       }
       rows.add(
@@ -287,12 +309,23 @@ bool _continues(RowKind block, MdLineKind last, MdLineKind next) =>
       RowKind.code => last != MdLineKind.fenceClose,
       RowKind.table =>
         next == MdLineKind.tableDelimiter || next == MdLineKind.tableBody,
+      RowKind.attachment => false,
       RowKind.prose ||
       RowKind.bullet ||
       RowKind.numbered ||
       RowKind.task ||
       RowKind.quote => _proseKinds.contains(next),
     };
+
+/// Whether [line] of [text] is an attachment row's line (Spec #123 R23,
+/// R32): a plain line that is exactly one attachment reference once leading
+/// and trailing whitespace is trimmed.
+bool _isAttachmentLine(String text, MdLine line) =>
+    line.kind == MdLineKind.plain &&
+    parseAttachmentReference(
+          text.substring(line.start, line.contentEnd).trim(),
+        ) !=
+        null;
 
 /// The line kinds a prose row is made of: neither items, fence lines nor
 /// table lines.
@@ -306,7 +339,7 @@ const _proseKinds = {
 
 /// The parent of a new item row with [indent] (Spec R12): the nearest
 /// earlier item row with a smaller indent, searching back until the first
-/// prose, code or table row.
+/// row that is not an item.
 int? _parent(List<RowSpec> rows, int indent) {
   for (var i = rows.length - 1; i >= 0; i--) {
     final row = rows[i];

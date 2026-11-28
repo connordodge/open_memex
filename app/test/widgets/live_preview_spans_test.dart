@@ -2283,4 +2283,268 @@ void main() {
       );
     });
   });
+
+  // WI #64 (Spec #57 Req 1-4, TD 1-2): the caret after a heading line's
+  // trailing spaces before a terminator is drawn after those spaces, the
+  // span still holding only TextSpans whose plain text is the field text.
+  group('heading trailing spaces before a terminator (WI 64)', () {
+    testWidgets(
+      'heading lines with trailing spaces before a terminator keep the field text as plain text in TextSpans and draw the caret after the spaces',
+      (tester) async {
+        for (final (level, _) in _wi223Sizes) {
+          for (final terminator in ['\n', '\r\n']) {
+            // Not '#  ' (no word, two spaces): there the trailing spaces
+            // span the marker run and a whitespace-only text run, which
+            // lays out short even at the end of the text on main.
+            for (final (word, spaces) in [
+              ('', 0),
+              ('Hi', 1),
+              ('Hi', 2),
+              ('Hi **b**', 1),
+              ('Hi **b**', 2),
+            ]) {
+              {
+                final head = '${'#' * level} $word${' ' * spaces}';
+                final text = '$head${terminator}body';
+                final end = head.length;
+                final why = 'H$level "${_wi64Show(text)}"';
+                final c = _controller(text, selection: _caret(end));
+                final editable = await _wi223PumpEditorField(tester, c);
+                _expectExactPlainText(
+                  editable.text! as TextSpan,
+                  text,
+                  '$why field span',
+                );
+                _expectExactPlainText(
+                  _build(text, selection: _caret(end)),
+                  text,
+                  '$why builder span',
+                );
+                final caret = editable
+                    .getLocalRectForCaret(TextPosition(offset: end))
+                    .left;
+                expect(
+                  caret,
+                  closeTo(_wi64TrailingEdge(editable, end), 0.5),
+                  reason: '$why: caret at $end on the last space edge',
+                );
+                expect(
+                  caret,
+                  greaterThan(_wi64TrailingEdge(editable, end - 1) + 1),
+                  reason: '$why: caret right of the code unit before it',
+                );
+              }
+            }
+          }
+        }
+      },
+    );
+
+    test(
+      'a range selection across a heading lines trailing spaces and terminator keeps the selected marker and the heading and body styles',
+      () {
+        for (final (level, size) in _wi223Sizes) {
+          final (_, colour) = _wi223Colours[level - 1];
+          for (final terminator in ['\n', '\r\n']) {
+            final text = '${'#' * level} Hi  ${terminator}body';
+            final why = 'H$level "${_wi64Show(text)}" selected';
+            final span = _build(
+              text,
+              selection: TextSelection(
+                baseOffset: 0,
+                extentOffset: text.length,
+              ),
+            );
+            _expectMarker(
+              span,
+              text,
+              (0, level + 1),
+              size: size,
+              color: OmColors.fg1,
+            );
+            _wi223ExpectHeadingText(
+              span,
+              text,
+              _range(text, 'Hi'),
+              size: size,
+              weight: level <= 3 ? FontWeight.w700 : FontWeight.w500,
+              colour: colour,
+              why: why,
+            );
+            _expectPlainRange(span, text, _range(text, 'body'));
+            _expectExactPlainText(span, text, why);
+          }
+        }
+      },
+    );
+  });
+
+  // WI #90 (Spec #57 Req 1-4, TD 1-2): a heading line of hashes and two or
+  // more spaces with no word yet. On the base the first space sits in the
+  // marker run and the rest in a whitespace-only text run whose boxes
+  // overlap it, so the caret after the last space is one space short.
+  group('heading hashes with several spaces and no word (WI 90)', () {
+    testWidgets(
+      'heading lines of hashes and several spaces keep the field text as plain text in TextSpans and draw the caret after the last space',
+      (tester) async {
+        for (final (level, size) in _wi223Sizes) {
+          for (final terminator in ['', '\n', '\r\n']) {
+            for (final spaces in [2, 3]) {
+              final head = '${'#' * level}${' ' * spaces}';
+              final rest = terminator.isEmpty ? '' : '${terminator}body';
+              final text = '$head$rest';
+              final end = head.length;
+              final why = 'H$level "${_wi64Show(text)}"';
+              // The builder span keeps the text revealed (the caret after
+              // the spaces), selected (a range across the text) and hidden.
+              for (final (state, selection, hidden) in [
+                ('revealed', _caret(end), false),
+                (
+                  'selected',
+                  TextSelection(baseOffset: 0, extentOffset: text.length),
+                  false,
+                ),
+                ('hidden', _caret(end), true),
+              ]) {
+                _expectExactPlainText(
+                  _build(text, selection: selection, forceHidden: hidden),
+                  text,
+                  '$why $state builder span',
+                );
+              }
+              final c = _controller(text, selection: _caret(end));
+              final editable = await _wi223PumpEditorField(tester, c);
+              _expectExactPlainText(
+                editable.text! as TextSpan,
+                text,
+                '$why field span',
+              );
+              final caret = editable
+                  .getLocalRectForCaret(TextPosition(offset: end))
+                  .left;
+              expect(
+                caret,
+                closeTo(_wi64TrailingEdge(editable, end), 0.5),
+                reason: '$why: caret at $end on the last space edge',
+              );
+              expect(
+                caret,
+                greaterThan(_wi64TrailingEdge(editable, end - 1) + 1),
+                reason: '$why: caret right of the space before the last',
+              );
+              expect(
+                caret,
+                closeTo(_normalWidth(head, size), 0.5),
+                reason: '$why: caret one width of "$head" at $size in',
+              );
+            }
+          }
+        }
+      },
+    );
+
+    // Pins which runs the spaces after the separator belong to: only a
+    // revealed line with no word folds them into the marker run (#90).
+    test(
+      'heading spaces with no word are marker text while revealed and heading text otherwise',
+      () {
+        for (final (level, size) in _wi223Sizes) {
+          final (_, colour) = _wi223Colours[level - 1];
+          final weight = level <= 3 ? FontWeight.w700 : FontWeight.w500;
+          final hashes = '#' * level;
+          for (final terminator in ['', '\n', '\r\n']) {
+            final rest = terminator.isEmpty ? '' : '${terminator}body';
+            for (final spaces in [2, 3]) {
+              final head = '$hashes${' ' * spaces}';
+              final text = '$head$rest';
+              final why = 'H$level "${_wi64Show(text)}"';
+              // Revealed: the hashes and every space are one marker run.
+              _expectMarker(
+                _build(text, selection: _caret(head.length)),
+                text,
+                (0, head.length),
+                size: size,
+              );
+              _expectMarker(
+                _build(
+                  text,
+                  selection: TextSelection(
+                    baseOffset: 0,
+                    extentOffset: text.length,
+                  ),
+                ),
+                text,
+                (0, head.length),
+                size: size,
+                color: OmColors.fg1,
+              );
+              // Hidden: the hashes and the separator are zero width and the
+              // spaces after the separator stay shown heading text.
+              final hidden = _build(text, forceHidden: true);
+              _expectHidden(hidden, text, 0, level + 1);
+              _wi223ExpectHeadingText(
+                hidden,
+                text,
+                (level + 1, head.length),
+                size: size,
+                weight: weight,
+                colour: colour,
+                why: '$why hidden spaces',
+              );
+            }
+          }
+
+          // A word after the spaces: only the hashes and the separator are
+          // the marker, the further spaces and the word are heading text.
+          final word = '$hashes  Hi';
+          for (final (state, span) in [
+            ('revealed', _build(word, selection: _caret(word.length))),
+            ('hidden', _build(word, forceHidden: true)),
+          ]) {
+            if (state == 'revealed') {
+              _expectMarker(span, word, (0, level + 1), size: size);
+            } else {
+              _expectHidden(span, word, 0, level + 1);
+            }
+            _wi223ExpectHeadingText(
+              span,
+              word,
+              (level + 1, word.length),
+              size: size,
+              weight: weight,
+              colour: colour,
+              why: 'H$level "$word" $state text',
+            );
+          }
+
+          // A tab after the spaces is not folded into the marker run.
+          final tabbed = '$hashes  \t';
+          final tabSpan = _build(tabbed, selection: _caret(tabbed.length));
+          _expectMarker(tabSpan, tabbed, (0, level + 1), size: size);
+          _eachStyle(tabSpan, tabbed, (level + 1, tabbed.length), (s, unit) {
+            expect(
+              _weight(s),
+              weight,
+              reason: 'H$level "$hashes  \\t" $unit is heading text',
+            );
+          });
+        }
+      },
+    );
+  });
+}
+
+/// Shows [text] for a failure reason (`\r` and `\n` spelled out).
+String _wi64Show(String text) =>
+    text.replaceAll('\r', r'\r').replaceAll('\n', r'\n');
+
+/// The trailing (right) edge of the glyph of the code unit just before
+/// [offset], from [editable]'s own laid-out text (the leftmost box: a range
+/// that ends at a line end can also report the line's trailing box).
+double _wi64TrailingEdge(RenderEditable editable, int offset) {
+  final boxes = editable.getBoxesForSelection(
+    TextSelection(baseOffset: offset - 1, extentOffset: offset),
+  )..sort((a, b) => a.left.compareTo(b.left));
+  expect(boxes, isNotEmpty, reason: 'a box for code unit ${offset - 1}');
+  return boxes.first.right;
 }

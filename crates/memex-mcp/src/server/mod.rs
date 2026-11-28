@@ -2,28 +2,29 @@
 //!
 //! One axum router serves every route under one bearer-token layer (D7).
 //! From the outside in, a request passes the access log, the auth layer and
-//! the 8 MiB body limit before it reaches a route. On a `/vaults/{name}/…`
-//! path the vault guard then resolves the vault (or answers 404
-//! `vault_not_found`) before any handler runs.
+//! the body limit (8 MiB; the attachment upload caps its own body at 100 MB)
+//! before it reaches a route. On a `/vaults/{name}/…` path the vault guard
+//! then resolves the vault (or answers 404 `vault_not_found`) before any
+//! handler runs.
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use axum::extract::DefaultBodyLimit;
-use axum::http::header::CONTENT_TYPE;
-use axum::http::StatusCode;
-use axum::middleware::{from_fn, from_fn_with_state, map_response};
+use axum::extract::{DefaultBodyLimit, Request};
+use axum::http::header::{CONTENT_LENGTH, CONTENT_TYPE};
+use axum::http::{HeaderMap, StatusCode};
+use axum::middleware::{from_fn, from_fn_with_state, map_response, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use axum::{Extension, Json, Router};
+use axum::{Extension, Json, RequestExt, Router};
 use memex_core::embedder::Embedder;
 use memex_core::fs_guard::{self, FsInfo};
 use memex_core::{MemexError, SystemClock};
 use serde_json::{json, Value};
-use tower_http::limit::RequestBodyLimitLayer;
 
+use crate::attachment_extract_child::ChildExtractor;
 use crate::cli::InvalidArgument;
 
 pub mod api;
@@ -47,7 +48,8 @@ use request_clock::{BaseClock, SharedClock};
 /// The app API version this server speaks (the app's `kApiVersion`, D17).
 pub const API_VERSION: u32 = 1;
 
-/// The largest request body the server reads (req 19): 8 MiB.
+/// The largest request body the server reads (req 19): 8 MiB. Only the
+/// attachment upload takes more (Spec #123 R40): see [`body_limit`].
 pub const BODY_LIMIT: usize = 8 * 1024 * 1024;
 
 /// How often the vault server checks which vaults are due a backup (req 28).
@@ -64,6 +66,7 @@ pub struct ServerConfig {
     clock: SharedClock,
     backups: Option<BackupConfig>,
     backup_archive_hook: Option<BackupArchiveHook>,
+    extractor: Option<ChildExtractor>,
 }
 
 impl ServerConfig {
@@ -77,7 +80,20 @@ impl ServerConfig {
             clock: Arc::new(SystemClock),
             backups: None,
             backup_archive_hook: None,
+            extractor: None,
         }
+    }
+
+    /// The attachment extraction child every served vault uses (default:
+    /// the running `memex`). Tests pass the built `memex` or a test child.
+    pub fn with_extractor(mut self, extractor: ChildExtractor) -> Self {
+        self.extractor = Some(extractor);
+        self
+    }
+
+    /// The extraction child set with [`Self::with_extractor`], if any.
+    pub fn extractor(&self) -> Option<&ChildExtractor> {
+        self.extractor.as_ref()
     }
 
     /// Whether every served vault uses real embeddings (default: no).
@@ -159,7 +175,11 @@ fn app_parts(config: ServerConfig) -> (Router, Arc<BackupService>, Arc<Registry>
         (None, true) => Some(crate::state::build_embedder_in(&config.root)),
         (None, false) => None,
     };
-    let registry = Arc::new(Registry::new(config.root.clone(), embedder));
+    let registry = Arc::new(Registry::with_extractor(
+        config.root.clone(),
+        embedder,
+        config.extractor.clone(),
+    ));
     crate::backfill::spawn_server(registry.clone());
     let service = Arc::new(BackupService::new(
         config.backups.clone(),
@@ -192,7 +212,8 @@ fn routes(config: &ServerConfig, registry: Arc<Registry>, service: Arc<BackupSer
         .layer(Extension(BaseClock(config.clock())))
         .layer(from_fn(request_clock::caller_utc_offset))
         .layer(DefaultBodyLimit::disable())
-        .layer(RequestBodyLimitLayer::new(BODY_LIMIT))
+        .layer(from_fn(body_limit))
+        .layer(DefaultBodyLimit::max(BODY_LIMIT))
         .layer(map_response(c1_payload_too_large))
         .layer(from_fn_with_state(token, auth::require_token))
         .layer(from_fn(log::access_log))
@@ -218,6 +239,28 @@ async fn method_not_allowed() -> ApiError {
         "method_not_allowed",
         "this path does not serve this HTTP method",
     )
+}
+
+/// The body limit, picked per request (Spec #123 TD "Server body limit").
+///
+/// The attachment upload passes through: its handler reads the body itself,
+/// up to 100 MB, and answers R15's 413. Every other request gets the 8 MiB
+/// limit before routing: 413 by `Content-Length`, and a body that runs past
+/// it fails to read (`DefaultBodyLimit::max(BODY_LIMIT)`, the layer just
+/// outside, sets the limit `with_limited_body` applies).
+async fn body_limit(req: Request, next: Next) -> Response {
+    if api::attachments::is_upload(req.method(), req.uri().path()) {
+        return next.run(req).await;
+    }
+    if content_length(req.headers()).is_some_and(|len| len > BODY_LIMIT) {
+        return error::payload_too_large().into_response();
+    }
+    next.run(req.with_limited_body()).await
+}
+
+/// The request's `Content-Length`, when it is a number.
+pub(crate) fn content_length(headers: &HeaderMap) -> Option<usize> {
+    headers.get(CONTENT_LENGTH)?.to_str().ok()?.parse().ok()
 }
 
 /// Gives the body limit's own 413 (and any other 413 without a JSON body)

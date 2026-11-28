@@ -3,9 +3,10 @@
 //!
 //! - The registered set always comes from the composed routers
 //!   (`Memex::routers()`, rmcp `list_all()`), never a hand-copied list.
-//! - The 25 write tools and each group's members are hand-listed here: they
-//!   are the contract (#390 requirement 8, #394 requirement 34, and Spec #7
-//!   requirement 38 for `edit_note`).
+//! - The 26 write tools and each group's members are hand-listed here: they
+//!   are the contract (#390 requirement 8, #394 requirement 34, Spec #7
+//!   requirement 38 for `edit_note`, and Spec #123 R18 for the attachment
+//!   tools).
 //! - `Memex::new` serves exactly what `Memex::routers()` registers (D12),
 //!   checked over an in-process MCP connection.
 
@@ -31,6 +32,8 @@ const GROUPS: [(&str, &str, &[&str]); 6] = [
             "edit_note",
             "add_link",
             "update_link",
+            "add_attachment",
+            "get_attachment",
         ],
     ),
     (
@@ -91,9 +94,9 @@ const GROUPS: [(&str, &str, &[&str]); 6] = [
     ),
 ];
 
-/// #390 requirement 8 and Spec #7 requirement 38: exactly these 25 tools
-/// write.
-const WRITE_TOOLS: [&str; 25] = [
+/// #390 requirement 8, Spec #7 requirement 38 and Spec #123 R18
+/// (`add_attachment`): exactly these 26 tools write.
+const WRITE_TOOLS: [&str; 26] = [
     "create_note",
     "edit_note",
     "add_excerpt",
@@ -119,6 +122,7 @@ const WRITE_TOOLS: [&str; 25] = [
     "update_vault_guide",
     "record_feedback",
     "resolve_feedback",
+    "add_attachment",
 ];
 
 const PROMPTS: [&str; 2] = ["review_daily_notes", "capture"];
@@ -350,9 +354,9 @@ fn tool_summaries_are_not_cut_from_the_mcp_description() {
 // ---------- AC 4: write_tools() and is_write ----------
 
 #[test]
-fn write_tools_equals_exactly_the_25_write_names() {
+fn write_tools_equals_exactly_the_26_write_names() {
     let writes = meta::write_tools();
-    assert_eq!(writes.len(), 25, "no duplicates, no extras: {writes:?}");
+    assert_eq!(writes.len(), 26, "no duplicates, no extras: {writes:?}");
     assert_eq!(set(writes.iter().copied()), set(WRITE_TOOLS));
 }
 
@@ -372,9 +376,9 @@ fn is_write_is_true_for_each_write_tool_and_false_for_every_other_registered_too
             true_count += 1;
         }
     }
-    assert_eq!(true_count, 25, "registered write tools");
+    assert_eq!(true_count, 26, "registered write tools");
     let write_rows = meta::tools().iter().filter(|r| r.writes).count();
-    assert_eq!(write_rows, 25, "rows with writes = true");
+    assert_eq!(write_rows, 26, "rows with writes = true");
 }
 
 #[test]
@@ -394,6 +398,31 @@ fn is_write_is_false_for_unknown_names_and_prompts() {
         "review_daily_notes",
     ] {
         assert!(!meta::is_write(name), "is_write({name:?})");
+    }
+}
+
+// ---------- is_logged: the activity hook's one gate ----------
+
+#[test]
+fn is_logged_is_true_only_for_write_tools_other_than_add_attachment() {
+    assert!(meta::is_logged("create_note"), "create_note is logged");
+    assert!(
+        !meta::is_logged("add_attachment"),
+        "add_attachment is a write but never logged"
+    );
+    assert!(!meta::is_logged("search"), "search is a read");
+    assert!(
+        !meta::is_logged("get_attachment"),
+        "get_attachment is a read"
+    );
+    for name in ["", "no_such_tool", "CREATE_NOTE", "capture"] {
+        assert!(!meta::is_logged(name), "is_logged({name:?})");
+    }
+    // Every registered tool: logged exactly when it writes and is not
+    // add_attachment.
+    for name in registered_tools() {
+        let expected = meta::is_write(&name) && name != "add_attachment";
+        assert_eq!(meta::is_logged(&name), expected, "is_logged({name:?})");
     }
 }
 
@@ -459,9 +488,10 @@ async fn memex_new_serves_exactly_the_tools_and_prompts_routers_registers() {
         router_prompts, served_prompts,
         "routers() prompts vs Memex::new"
     );
-    // The registered set: the 37 tools before Spec #7, `edit_note`, 2 prompts.
+    // The registered set: the 37 tools before Spec #7, `edit_note`, Spec
+    // #123's `add_attachment` and `get_attachment` (R22), 2 prompts.
     let spec_tools = set(GROUPS.iter().flat_map(|(_, _, m)| m.iter().copied()));
-    assert_eq!(spec_tools.len(), 38);
+    assert_eq!(spec_tools.len(), 40);
     assert_eq!(served_tools, spec_tools, "served tools");
     assert_eq!(served_prompts, set(PROMPTS), "served prompts");
 }
@@ -482,9 +512,50 @@ fn edit_note_row_is_a_notes_write_tool_with_the_spec_summary() {
         }
     );
     assert!(meta::is_write("edit_note"), "edit_note writes");
-    assert_eq!(meta::tools().len(), 38, "the catalog has 38 tools");
+    assert_eq!(meta::tools().len(), 40, "the catalog has 40 tools");
     assert!(
         registered_tools().iter().any(|name| name == "edit_note"),
         "Memex::routers() registers edit_note"
     );
+}
+
+// ---------- Spec #123 R18, R22: the attachment rows (WI #138) ----------
+
+#[test]
+fn attachment_rows_are_notes_tools_with_the_spec_summaries() {
+    let add = *meta::tool("add_attachment").expect("add_attachment has a meta row");
+    assert_eq!(
+        add,
+        meta::ToolMeta {
+            name: "add_attachment",
+            summary: "Stores a file in the vault and returns the markdown to place in a note.",
+            group: Group::Notes,
+            writes: true,
+        }
+    );
+    let get = *meta::tool("get_attachment").expect("get_attachment has a meta row");
+    assert_eq!(
+        get,
+        meta::ToolMeta {
+            name: "get_attachment",
+            summary: "Reads an attachment: an image, a text file's text, or its details.",
+            group: Group::Notes,
+            writes: false,
+        }
+    );
+    assert!(
+        meta::is_write("add_attachment"),
+        "add_attachment is a write"
+    );
+    assert!(
+        !meta::is_write("get_attachment"),
+        "get_attachment is a read"
+    );
+    let registered = registered_tools();
+    for name in ["add_attachment", "get_attachment"] {
+        assert!(
+            registered.iter().any(|n| n == name),
+            "Memex::routers() registers {name}"
+        );
+    }
 }

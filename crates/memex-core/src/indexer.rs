@@ -4,9 +4,13 @@
 //! Vector embeddings are written if a non-None [`crate::embedder::Embedder`]
 //! is provided; otherwise indexing is FTS-only.
 
+use std::borrow::Cow;
+use std::ops::Range;
+
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use ulid::Ulid;
 
+use crate::attachments;
 use crate::chunker::{self, Chunk};
 use crate::daily;
 use crate::embedder::Embedder;
@@ -25,29 +29,30 @@ use crate::Result;
 /// marker line, for any other note [`tags::person_section`]. Chunk ranges
 /// stay byte offsets into the full `content_md`. The `chunk_vec` rows of the
 /// old chunks are deleted whenever `chunk_vec` exists, with or without an
-/// embedder (req 4).
+/// embedder (req 4). The note's `note_attachments` rows are rewritten from
+/// the attachment reference lines of the same person section (R49).
 pub fn reindex_note(
     conn: &mut Connection,
     note_id: &str,
     content_md: &str,
     embedder: Option<&dyn Embedder>,
 ) -> Result<usize> {
-    let chunks = person_chunks(conn, note_id, content_md)?;
+    let person = person_range(conn, note_id, content_md)?;
+    let chunks = person_chunks(content_md, &person);
 
     if let Some(e) = embedder {
         schema::ensure_vector_table(conn, e.dimension())?;
     }
 
     let tx = conn.transaction()?;
-    let written = write_index(&tx, note_id, content_md, &chunks, embedder)?;
+    let written = write_index(&tx, note_id, content_md, &person, &chunks, embedder)?;
     tx.commit()?;
     Ok(written)
 }
 
-/// The chunks of `content_md`'s person section, with ranges into the full
-/// `content_md`. The note's role comes from its stored frontmatter; a note
-/// missing from `notes` is not daily.
-fn person_chunks(conn: &Connection, note_id: &str, content_md: &str) -> Result<Vec<Chunk>> {
+/// The byte range of `content_md`'s person section. The note's role comes
+/// from its stored frontmatter; a note missing from `notes` is not daily.
+fn person_range(conn: &Connection, note_id: &str, content_md: &str) -> Result<Range<usize>> {
     let frontmatter: Option<String> = conn
         .query_row(
             "SELECT frontmatter FROM notes WHERE id = ?",
@@ -56,37 +61,199 @@ fn person_chunks(conn: &Connection, note_id: &str, content_md: &str) -> Result<V
         )
         .optional()?;
     let is_daily = frontmatter.is_some_and(|f| daily::is_daily(&notes::lenient_frontmatter(&f)));
-    let (base, section) = if is_daily {
+    Ok(if is_daily {
         // The daily person section runs from after any leading frontmatter
         // block to the first marker line. Ranges stay offsets into the full
         // body, so chunk and block ranges share a base (D25).
         let (_, start) = link_extractor::split_frontmatter(content_md);
         let end =
             daily::daily_marker_start(&content_md[start..]).map_or(content_md.len(), |e| start + e);
-        (start, &content_md[start..end])
+        start..end
     } else {
         // `person_section` returns a subslice of `content_md`.
         let section = tags::person_section(content_md);
-        (
-            section.as_ptr() as usize - content_md.as_ptr() as usize,
-            section,
-        )
-    };
-    let mut chunks = chunker::chunk(section);
-    for c in &mut chunks {
-        c.start_byte += base;
-        c.end_byte += base;
-    }
-    Ok(chunks)
+        let start = section.as_ptr() as usize - content_md.as_ptr() as usize;
+        start..start + section.len()
+    })
 }
 
-/// Rewrites a note's index rows (flags, links, chunks, FTS and vectors) from
-/// `content_md` and `chunks` inside the caller's transaction, and removes its
-/// `pending_index` row. Returns the number of chunks written.
+/// The chunks of the `person` section of `content_md`, with ranges into the
+/// full `content_md`.
+fn person_chunks(content_md: &str, person: &Range<usize>) -> Vec<Chunk> {
+    let mut chunks = chunker::chunk(&content_md[person.clone()]);
+    for c in &mut chunks {
+        c.start_byte += person.start;
+        c.end_byte += person.start;
+    }
+    chunks
+}
+
+/// The attachment references of the `person` section of `content_md`, in
+/// body order: `(decoded vault-relative path, line start byte)` for each
+/// reference line, the byte offset into the full `content_md` (R49).
+///
+/// A reference line is a line whose content, without surrounding
+/// whitespace, is exactly one attachment reference
+/// ([`attachments::parse_reference`], R4). A reference with anything else
+/// on its line, and any line inside fenced code (an unclosed fence runs to
+/// the end of the section), is not one. The same reference on two lines is
+/// two entries.
+fn attachment_reference_lines(content_md: &str, person: &Range<usize>) -> Vec<(String, usize)> {
+    let mut out = Vec::new();
+    let mut fence: Option<tags::Fence> = None;
+    let mut line_start = person.start;
+    for line in content_md[person.clone()].split_inclusive('\n') {
+        let text = line.strip_suffix('\n').unwrap_or(line);
+        if let Some(open) = fence {
+            if open.closed_by(text) {
+                fence = None;
+            }
+        } else if let Some(opened) = tags::Fence::opened_by(text) {
+            fence = Some(opened);
+        } else if let Some(reference) = attachments::parse_reference(text.trim()) {
+            out.push((reference.target.path, line_start));
+        }
+        line_start += line.len();
+    }
+    out
+}
+
+/// The text of a note chunk that `chunk_fts` and the embedding input hold
+/// (R45): `content` with the `(objects/…)` destination of each attachment
+/// reference left out, so `[name](objects/…)` reads `[name]` and hash
+/// fragments never match a query. Every `](<destination>)` whose
+/// destination is an attachment path ([`attachments::parse_destination`];
+/// it holds no whitespace, `(` or `)`) is cut, wherever it sits: alone on
+/// its line, inside prose, in a list item or quote, or several on one line.
+/// Lines inside fenced code are kept whole. `fence` is the fence already
+/// open where `content` starts, since a chunk can start inside fenced code
+/// that has a blank line (see [`fence_at`]). Every other byte is kept;
+/// `chunks.content` itself is never changed.
+fn index_text_from(content: &str, mut fence: Option<tags::Fence>) -> Cow<'_, str> {
+    let mut cuts: Vec<Range<usize>> = Vec::new();
+    let mut at = 0;
+    for line in content.split_inclusive('\n') {
+        let text = line.strip_suffix('\n').unwrap_or(line);
+        if outside_fence(&mut fence, text) {
+            cuts.extend(
+                destination_cuts(text)
+                    .into_iter()
+                    .map(|r| at + r.start..at + r.end),
+            );
+        }
+        at += line.len();
+    }
+    if cuts.is_empty() {
+        return Cow::Borrowed(content);
+    }
+    let mut out = String::with_capacity(content.len());
+    let mut kept = 0;
+    for cut in cuts {
+        out.push_str(&content[kept..cut.start]);
+        kept = cut.end;
+    }
+    out.push_str(&content[kept..]);
+    Cow::Owned(out)
+}
+
+/// Advances the fenced-code state `fence` over one line `text` (without
+/// its newline). Returns whether `text` is outside fenced code and is not a
+/// fence line itself.
+fn outside_fence(fence: &mut Option<tags::Fence>, text: &str) -> bool {
+    if let Some(open) = *fence {
+        if open.closed_by(text) {
+            *fence = None;
+        }
+        false
+    } else if let Some(opened) = tags::Fence::opened_by(text) {
+        *fence = Some(opened);
+        false
+    } else {
+        true
+    }
+}
+
+/// The byte ranges of `line` that hold the `(<destination>)` of an
+/// attachment reference: each `(` right after a `]`, through the first `)`
+/// after it, when what lies between is an attachment destination.
+fn destination_cuts(line: &str) -> Vec<Range<usize>> {
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some(i) = line[from..].find("](") {
+        let open = from + i + 1;
+        let rest = &line[open + 1..];
+        let len = rest
+            .find(|c: char| c.is_whitespace() || c == '(' || c == ')')
+            .filter(|&n| n > 0 && rest[n..].starts_with(')'));
+        match len {
+            Some(n) if attachments::parse_destination(&rest[..n]).is_some() => {
+                let end = open + 1 + n + 1;
+                out.push(open..end);
+                from = end;
+            }
+            _ => from = open,
+        }
+    }
+    out
+}
+
+/// The fenced-code state at byte `at` of `content_md`'s `person` section:
+/// the fence left open by the section's whole lines that end at or before
+/// `at`, read as [`attachment_reference_lines`] reads them.
+fn fence_at(content_md: &str, person: &Range<usize>, at: usize) -> Option<tags::Fence> {
+    let mut fence = None;
+    let mut line_end = person.start;
+    for line in content_md[person.clone()].split_inclusive('\n') {
+        line_end += line.len();
+        if line_end > at {
+            break;
+        }
+        outside_fence(&mut fence, line.strip_suffix('\n').unwrap_or(line));
+    }
+    fence
+}
+
+/// [`index_text_from`] for the chunk `content` of note body `content_md`
+/// that starts at byte `start` of its `person` section.
+fn chunk_index_text<'a>(
+    content_md: &str,
+    person: &Range<usize>,
+    content: &'a str,
+    start: usize,
+) -> Cow<'a, str> {
+    index_text_from(content, fence_at(content_md, person, start))
+}
+
+/// The `chunk_fts` / embedding input text (R45, [`index_text_from`]) of a
+/// stored chunk of note `note_id`: its `content`, starting at byte `start`
+/// of the note's stored body `content_md`. With no body or no stored start
+/// the chunk is read as starting outside fenced code.
+pub(crate) fn stored_chunk_index_text(
+    conn: &Connection,
+    note_id: &str,
+    content_md: Option<&str>,
+    start: Option<i64>,
+    content: &str,
+) -> Result<String> {
+    let fence = match (content_md, start.and_then(|s| usize::try_from(s).ok())) {
+        (Some(body), Some(start)) => {
+            let person = person_range(conn, note_id, body)?;
+            fence_at(body, &person, start)
+        }
+        _ => None,
+    };
+    Ok(index_text_from(content, fence).into_owned())
+}
+
+/// Rewrites a note's index rows (flags, links, chunks, FTS, vectors and
+/// attachment references) from `content_md`, its `person` section range and
+/// `chunks` inside the caller's transaction, and removes its `pending_index`
+/// row. Returns the number of chunks written.
 fn write_index(
     tx: &Connection,
     note_id: &str,
     content_md: &str,
+    person: &Range<usize>,
     chunks: &[Chunk],
     embedder: Option<&dyn Embedder>,
 ) -> Result<usize> {
@@ -136,7 +303,12 @@ fn write_index(
     // Compute embeddings up front (outside the SQL loop) if requested.
     let embeddings: Option<Vec<Vec<f32>>> = match embedder {
         Some(e) if !chunks.is_empty() => {
-            let texts: Vec<String> = chunks.iter().map(|c| c.content.clone()).collect();
+            let texts: Vec<String> = chunks
+                .iter()
+                .map(|c| {
+                    chunk_index_text(content_md, person, &c.content, c.start_byte).into_owned()
+                })
+                .collect();
             Some(e.embed_batch(&texts)?)
         }
         _ => None,
@@ -162,7 +334,11 @@ fn write_index(
         )?;
         tx.execute(
             "INSERT INTO chunk_fts (chunk_id, note_id, content) VALUES (?, ?, ?)",
-            params![chunk_id, note_id, c.content],
+            params![
+                chunk_id,
+                note_id,
+                chunk_index_text(content_md, person, &c.content, c.start_byte)
+            ],
         )?;
         if let Some(embs) = &embeddings {
             let bytes = floats_le_bytes(&embs[idx]);
@@ -171,6 +347,20 @@ fn write_index(
                 params![chunk_id, bytes],
             )?;
         }
+    }
+
+    // Replace the note's attachment references (R49). Only `note_attachments`
+    // is written: `attachments` rows are the store's (R3), and a reference
+    // needs none.
+    tx.execute(
+        "DELETE FROM note_attachments WHERE note_id = ?",
+        params![note_id],
+    )?;
+    for (path, line_start) in attachment_reference_lines(content_md, person) {
+        tx.execute(
+            "INSERT INTO note_attachments (note_id, path, line_start_byte) VALUES (?, ?, ?)",
+            params![note_id, path, line_start as i64],
+        )?;
     }
 
     tx.execute(
@@ -245,8 +435,9 @@ fn drain_one(conn: &mut Connection, note_id: &str) -> Result<()> {
         .optional()?;
     match body {
         Some(body) => {
-            let chunks = person_chunks(&tx, note_id, &body)?;
-            write_index(&tx, note_id, &body, &chunks, None)?;
+            let person = person_range(&tx, note_id, &body)?;
+            let chunks = person_chunks(&body, &person);
+            write_index(&tx, note_id, &body, &person, &chunks, None)?;
         }
         // Not queued any more, or queued for a note that no longer exists.
         None => {

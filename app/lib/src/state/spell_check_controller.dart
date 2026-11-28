@@ -11,8 +11,8 @@
 import 'dart:async';
 import 'dart:math' show max, min;
 
-import 'package:flutter/foundation.dart' show ValueListenable;
-import 'package:flutter/rendering.dart';
+import 'package:flutter/foundation.dart'
+    show ValueListenable, visibleForTesting;
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/widgets.dart';
 
@@ -58,11 +58,18 @@ abstract interface class SpellFieldHost {
   /// [field]'s line (see [SpellFieldLine]).
   SpellFieldLine line(TextEditingController field);
 
-  /// The field's laid-out text, or null.
-  RenderEditable? editable();
+  /// The global top and bottom of the field's laid-out text (WI #127, Spec
+  /// #122 Req 25: a geometry-free seam, so the controller holds no render
+  /// object), or null before it is laid out.
+  ({double top, double bottom})? extent();
 
-  /// The editor page's laid-out viewport, or null.
-  RenderBox? viewportBox();
+  /// The global top and bottom of the line holding field-local [offset]
+  /// (its caret's), or null before the field is laid out.
+  ({double top, double bottom})? extentAt(int offset);
+
+  /// The global top and bottom of the editor page's laid-out viewport, or
+  /// null without one.
+  ({double top, double bottom})? viewport();
 
   /// False only for a table row that shows its grid (Spec #392 req 2).
   bool revealed(TextEditingController field);
@@ -75,6 +82,21 @@ abstract interface class SpellFieldHost {
   /// leaves it. The host calls [SpellCheckController.focusChanged] when
   /// this flips.
   bool hasFocus(TextEditingController field);
+}
+
+/// A [SpellFieldHost] that can also say which fields of its run (an editor
+/// segment's rows, laid out top to bottom) lie in a vertical band, without
+/// asking each field for its geometry (WI #131, Spec #122 Req 25). Optional:
+/// a host that is not one is asked field by field.
+abstract interface class SpellFieldRun {
+  /// The run the host's field belongs to (compared by identity), or null
+  /// outside one.
+  Object? get run;
+
+  /// The fields of [run] whose laid-out rows meet the global band
+  /// [top]..[bottom], top to bottom; null when the run cannot tell (not
+  /// laid out).
+  List<TextEditingController>? fieldsWithin(double top, double bottom);
 }
 
 /// Schedules, filters and publishes the spelling and grammar issues of one
@@ -93,6 +115,11 @@ abstract interface class SpellFieldHost {
 /// are field-local and filtered by the skip ranges, the learned words, the
 /// session's ignore sets, the composing range, the caret and the flags.
 class SpellCheckController {
+  /// Test-only work counter: how many times any controller ran an
+  /// evaluation pass.
+  @visibleForTesting
+  static int debugEvaluations = 0;
+
   SpellCheckController({
     required String noteId,
     required SpellIssueSink sink,
@@ -127,11 +154,28 @@ class SpellCheckController {
 
   final _fields = <TextEditingController, _Field>{};
 
+  /// The fields of each [SpellFieldRun.run], and the fields in none (WI
+  /// #131): an evaluation asks a run for its fields near the viewport.
+  final _runs = Map<Object, Set<_Field>>.identity();
+  final _loose = <_Field>{};
+
+  /// The join order of the next field to join ([_Field.order]).
+  int _joins = 0;
+
+  /// The fields whose last computed layout holds each paragraph text (WI
+  /// #131): a reply or a prune looks its text up here instead of reading
+  /// every field again.
+  final _holders = <String, Set<_Field>>{};
+
   /// The request id sent for each (note, text, grammar) still waiting.
   final _inflight = <(String, String, bool), int>{};
   final _pending = <(String, String, bool), Future<void>>{};
 
   Timer? _debounce;
+
+  /// Runs out once the viewport stayed unchanged for [spellCheckDebounce]
+  /// (a scroll pause, WI #131).
+  Timer? _pause;
   bool _evaluateScheduled = false;
   final _deferred = <_Field>{};
   bool _flushScheduled = false;
@@ -168,6 +212,8 @@ class SpellCheckController {
     if (!value.spelling) {
       _debounce?.cancel();
       _debounce = null;
+      _pause?.cancel();
+      _pause = null;
       _inflight.clear();
       _pending.clear();
     } else {
@@ -324,25 +370,24 @@ class SpellCheckController {
         return byKind != 0 ? byKind : a.length.compareTo(b.length);
       });
 
-  /// The fields in document order: by the laid-out top of their text, then
-  /// its left; a field not laid out goes after those, in joining order.
+  /// The fields in document order: by the laid-out top of their text (the
+  /// host's [SpellFieldHost.extent]), then joining order; a field not laid
+  /// out goes after those, in joining order.
   List<_Field> _inDocumentOrder() {
     final keyed = [
       for (final (i, f) in _fields.values.indexed)
-        (field: f, origin: f.host.editable()?.localToGlobal(Offset.zero), i: i),
+        (field: f, top: f.host.extent()?.top, i: i),
     ];
     keyed.sort((a, b) {
-      final ao = a.origin;
-      final bo = b.origin;
-      if (ao == null || bo == null) {
-        if (ao != null) return -1;
-        if (bo != null) return 1;
+      final at = a.top;
+      final bt = b.top;
+      if (at == null || bt == null) {
+        if (at != null) return -1;
+        if (bt != null) return 1;
         return a.i.compareTo(b.i);
       }
-      final byTop = ao.dy.compareTo(bo.dy);
-      if (byTop != 0) return byTop;
-      final byLeft = ao.dx.compareTo(bo.dx);
-      return byLeft != 0 ? byLeft : a.i.compareTo(b.i);
+      final byTop = at.compareTo(bt);
+      return byTop != 0 ? byTop : a.i.compareTo(b.i);
     });
     return [for (final k in keyed) k.field];
   }
@@ -379,10 +424,15 @@ class SpellCheckController {
     _disposed = true;
     _debounce?.cancel();
     _debounce = null;
+    _pause?.cancel();
+    _pause = null;
     for (final f in _fields.values) {
       f.detach();
     }
     _fields.clear();
+    _runs.clear();
+    _loose.clear();
+    _holders.clear();
     _inflight.clear();
     _pending.clear();
     _deferred.clear();
@@ -394,10 +444,25 @@ class SpellCheckController {
   /// earlier host of [ctrl]).
   void addField(TextEditingController ctrl, SpellFieldHost host) {
     if (_disposed) return;
-    _fields.remove(ctrl)?.detach();
+    final old = _fields.remove(ctrl);
+    if (old != null) {
+      old.detach();
+      _leave(old);
+    }
     final f = _Field(ctrl, host, () => _onField(ctrl))
-      ..dirty = _debounce?.isActive ?? false;
+      ..dirty = _debounce?.isActive ?? false
+      ..order = _joins++
+      ..run = switch (host) {
+        final SpellFieldRun h => h.run,
+        _ => null,
+      };
     _fields[ctrl] = f;
+    final run = f.run;
+    if (run == null) {
+      _loose.add(f);
+    } else {
+      _runs.putIfAbsent(run, () => {}).add(f);
+    }
     f.attach();
     _rebase(f);
     _publish(f);
@@ -415,12 +480,27 @@ class SpellCheckController {
     if (f == null || !identical(f.host, host)) return;
     f.detach();
     _fields.remove(ctrl);
+    _leave(f);
     _deferred.remove(f);
     if (!forget) return;
     // After this frame: the field's listeners go with this frame's tree.
     SchedulerBinding.instance.addPostFrameCallback((_) {
       if (!_fields.containsKey(ctrl)) _sink.forget(ctrl);
     });
+  }
+
+  /// [f] no longer checks: out of its run and of the paragraph index.
+  void _leave(_Field f) {
+    final run = f.run;
+    if (run == null) {
+      _loose.remove(f);
+    } else {
+      final fields = _runs[run];
+      if (fields != null && fields.remove(f) && fields.isEmpty) {
+        _runs.remove(run);
+      }
+    }
+    _index(f, null);
   }
 
   /// [ctrl]'s focus flipped ([SpellFieldHost.hasFocus]): re-publishes its
@@ -510,8 +590,19 @@ class SpellCheckController {
   }
 
   /// The editor's page scrolled, or its content or viewport changed size:
-  /// other paragraphs may now be within one screen.
-  void viewportChanged() => _scheduleEvaluate();
+  /// other paragraphs may now be within one screen. They are checked once
+  /// the viewport pauses: no change for [spellCheckDebounce] on the clock
+  /// (WI #131, Spec #122 Req 26). Every change restarts the pause, a scroll
+  /// end too: one evaluation per pause.
+  void viewportChanged() {
+    _pause?.cancel();
+    _pause = null;
+    if (_disposed || !_flags.spelling) return;
+    _pause = _clock.after(spellCheckDebounce, () {
+      _pause = null;
+      _scheduleEvaluate();
+    });
+  }
 
   /// Sends a check for every paragraph that needs one: not cached, not
   /// waiting, not composing, of a field not changed within the debounce, on
@@ -523,6 +614,7 @@ class SpellCheckController {
     bool all = false,
     TextEditingController? from,
   }) {
+    debugEvaluations++;
     if (!_canCheck) return const [];
     final note = _noteId;
     final tag = _session.knownTag(note);
@@ -535,7 +627,7 @@ class SpellCheckController {
     final futures = <Future<void>>[];
     final List<(_Field, List<SpellParagraph>?)> runs = all
         ? _wholeNoteFrom(from)
-        : [for (final f in _fields.values.toList()) (f, null)];
+        : [for (final f in _nearFields(window)) (f, null)];
     for (final (f, only) in runs) {
       if (!all && f.dirty) continue;
       if (!f.revealed) continue;
@@ -601,10 +693,7 @@ class SpellCheckController {
     _pending.remove(key);
     if (reply == null || reply.requestId != id) return;
     final text = key.$2;
-    final holding = [
-      for (final f in _fields.values)
-        if (_layoutOf(f).paragraphs.any((p) => p.text == text)) f,
-    ];
+    final holding = _holding(text);
     // The text changed since the request: no paragraph holds it any more.
     if (holding.isEmpty) return;
     _session.cacheResult(key.$1, text, grammar: key.$3, issues: reply.issues);
@@ -618,15 +707,49 @@ class SpellCheckController {
   /// field: a newer request supersedes them when the text comes back.
   void _prune() {
     if (_inflight.isEmpty) return;
-    final texts = {
-      for (final f in _fields.values)
-        for (final p in _layoutOf(f).paragraphs) p.text,
-    };
     _inflight.removeWhere((key, _) {
-      final stale = key.$1 != _noteId || !texts.contains(key.$2);
+      final stale = key.$1 != _noteId || _holding(key.$2).isEmpty;
       if (stale) _pending.remove(key);
       return stale;
     });
+  }
+
+  /// The fields with a paragraph [text] now: of the fields whose last
+  /// layout held it ([_holders]), those whose layout as it stands still
+  /// does. Reads only those fields (WI #131).
+  List<_Field> _holding(String text) {
+    final known = _holders[text];
+    if (known == null) return const [];
+    return [
+      for (final f in known.toList())
+        if (identical(_fields[f.ctrl], f) &&
+            _layoutOf(f).paragraphs.any((p) => p.text == text))
+          f,
+    ];
+  }
+
+  /// The fields an evaluation looks at, in join order: every field without
+  /// a [window]; else the fields in no run, and of each run the fields whose
+  /// rows meet [window] (every field of a run that cannot tell), so the
+  /// geometry read is of the rows near the viewport only (WI #131).
+  List<_Field> _nearFields(({double top, double bottom})? window) {
+    if (window == null) return _fields.values.toList();
+    final out = <_Field>{..._loose};
+    for (final fields in _runs.values.toList()) {
+      final near = switch (fields.first.host) {
+        final SpellFieldRun h => h.fieldsWithin(window.top, window.bottom),
+        _ => null,
+      };
+      if (near == null) {
+        out.addAll(fields);
+        continue;
+      }
+      for (final ctrl in near) {
+        final f = _fields[ctrl];
+        if (f != null) out.add(f);
+      }
+    }
+    return out.toList()..sort((a, b) => a.order.compareTo(b.order));
   }
 
   /// The cached result for paragraph [text] under the current flags. With
@@ -645,43 +768,33 @@ class SpellCheckController {
   /// viewport to one screen below it; null without a laid-out viewport.
   ({double top, double bottom})? _window() {
     for (final f in _fields.values) {
-      final box = f.host.viewportBox();
-      if (box == null) continue;
-      final top = box.localToGlobal(Offset.zero).dy;
-      final h = box.size.height;
-      return (top: top - h, bottom: top + 2 * h);
+      final viewport = f.host.viewport();
+      if (viewport == null) continue;
+      final h = viewport.bottom - viewport.top;
+      return (top: viewport.top - h, bottom: viewport.bottom + h);
     }
     return null;
   }
 
-  /// [layout]'s paragraphs of [f] whose lines lie within [window].
+  /// [layout]'s paragraphs of [f] whose lines lie within [window], from the
+  /// tops and bottoms its host answers (Spec #122 Req 25).
   List<SpellParagraph> _near(
     _Field f,
     _Layout layout,
     ({double top, double bottom}) window,
   ) {
-    final editable = f.host.editable();
-    if (editable == null) return const [];
-    final origin = editable.localToGlobal(Offset.zero).dy;
-    if (origin + editable.size.height <= window.top ||
-        origin >= window.bottom) {
+    final extent = f.host.extent();
+    if (extent == null ||
+        extent.bottom <= window.top ||
+        extent.top >= window.bottom) {
       return const [];
     }
     final length = f.text.length;
-    double top(SpellParagraph p) =>
-        origin +
-        editable
-            .getLocalRectForCaret(
-              TextPosition(offset: (p.start - layout.base).clamp(0, length)),
-            )
-            .top;
-    double bottom(SpellParagraph p) =>
-        origin +
-        editable
-            .getLocalRectForCaret(
-              TextPosition(offset: (p.end - layout.base).clamp(0, length)),
-            )
-            .bottom;
+    // An offset the host cannot place counts as the field's own extent.
+    ({double top, double bottom}) at(int offset) =>
+        f.host.extentAt((offset - layout.base).clamp(0, length)) ?? extent;
+    double top(SpellParagraph p) => at(p.start).top;
+    double bottom(SpellParagraph p) => at(p.end).bottom;
     final ps = layout.paragraphs;
     // The first paragraph ending below the window's top.
     var lo = 0;
@@ -720,12 +833,28 @@ class SpellCheckController {
         cached.atSegmentStart == given.atSegmentStart) {
       return cached;
     }
-    return f.layout = _Layout(
+    final layout = _Layout(
       line: line,
       base: base,
       atSegmentStart: given.atSegmentStart,
       footerStart: footerStartOf?.call(line),
     );
+    _index(f, layout);
+    return f.layout = layout;
+  }
+
+  /// Moves [f] in [_holders] from its last layout's paragraphs to
+  /// [layout]'s (none when null).
+  void _index(_Field f, _Layout? layout) {
+    for (final p in f.layout?.paragraphs ?? const <SpellParagraph>[]) {
+      final fields = _holders[p.text];
+      if (fields != null && fields.remove(f) && fields.isEmpty) {
+        _holders.remove(p.text);
+      }
+    }
+    for (final p in layout?.paragraphs ?? const <SpellParagraph>[]) {
+      _holders.putIfAbsent(p.text, () => {}).add(f);
+    }
   }
 
   /// Recomputes [f]'s issues before the publish filters: a paragraph with a
@@ -1020,6 +1149,13 @@ class _Field {
 
   /// Changed since the debounce last fired.
   bool dirty = false;
+
+  /// When the field joined, among the controller's fields (their order in
+  /// `_fields`).
+  int order = 0;
+
+  /// Its host's [SpellFieldRun.run] when it joined, or null.
+  Object? run;
 
   /// The issues before the publish filters, field-local.
   List<SpellIssue> base = const [];

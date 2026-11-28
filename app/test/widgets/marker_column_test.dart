@@ -130,28 +130,13 @@ Finder _wi168Marker(int s, int r) => find.byKey(Key('editor-row-marker-$s-$r'));
 
 Finder _wi168Checkbox(int s, int r) => find.byKey(Key('task-checkbox-$s-$r'));
 
-TextEditingController _wi168Ctrl(WidgetTester tester, int s, int r) => tester
-    .widget<EditableText>(
-      find.descendant(of: _wi168Row(s, r), matching: find.byType(EditableText)),
-    )
-    .controller;
+TextEditingController _wi168Ctrl(WidgetTester tester, int s, int r) =>
+    segmentRowController(tester, s, r); // idle rows too (WI #132, Req 38)
 
-/// The global rect of row [s]-[r]'s field (its RenderEditable).
-Rect _wi168FieldRect(WidgetTester tester, int s, int r) {
-  RenderEditable? found;
-  void visit(RenderObject node) {
-    if (found != null) return;
-    if (node is RenderEditable) {
-      found = node;
-    } else {
-      node.visitChildren(visit);
-    }
-  }
-
-  visit(tester.renderObject(_wi168Row(s, r)));
-  if (found == null) throw TestFailure('No RenderEditable in row $s-$r');
-  return found!.localToGlobal(Offset.zero) & found!.size;
-}
+/// The global rect of row [s]-[r]'s text slot (its field's rect while it is
+/// the active row, WI #132).
+Rect _wi168FieldRect(WidgetTester tester, int s, int r) =>
+    tester.getRect(_wi168Row(s, r));
 
 /// Focus row [s]-[r]'s field and put its caret at local [local] (default:
 /// the row text's end).
@@ -161,6 +146,8 @@ Future<void> _wi168FocusRow(
   int r, {
   int? local,
 }) async {
+  // TEST-CHANGE (WI #132, Req 38): activate the row first.
+  await activateSegmentRow(tester, s, r, local: local);
   await tester.showKeyboard(_wi168Row(s, r));
   await tester.pump();
   final ctrl = _wi168Ctrl(tester, s, r);

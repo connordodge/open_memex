@@ -83,6 +83,19 @@ MarkerTaskCheck markerTaskCheck() {
   );
 }
 
+/// Test-only work counter: how many times any marker column built.
+@visibleForTesting
+int debugMarkerColumnBuilds = 0;
+
+/// Test-only work counter: how many times any marker column called
+/// `setState` after a watched listenable changed.
+@visibleForTesting
+int debugMarkerColumnSetStates = 0;
+
+/// Test-only work counter: how many times any marker column painted.
+@visibleForTesting
+int debugMarkerColumnPaints = 0;
+
 /// The marker column of one item row (Spec R2, R4, R11, R22, R24): [width]
 /// (A2's unrevealed marker column width) wide and one item line tall.
 ///
@@ -101,7 +114,10 @@ MarkerTaskCheck markerTaskCheck() {
 ///   edit, without moving focus or caret.
 ///
 /// It reads the row, its segment and its selection from the enclosing
-/// `EditorRow` and `SegmentView`. It joins the row fields'
+/// `EditorRow` and `SegmentView`, and rebuilds itself only when whether its
+/// marker is revealed or whether the segment selection spans its row
+/// changes (Spec #122 R21); its marker, number and checkbox come from the
+/// row, which rebuilds it when they change. It joins the row fields'
 /// `TextFieldTapRegion` group (D11), so a click on it does not unfocus the
 /// row's field, and a press anywhere on an editor row's column is the
 /// column's ([hitsMarkerColumn]): the segment's pointer layer leaves it
@@ -129,24 +145,36 @@ class MarkerColumn extends StatefulWidget {
   State<MarkerColumn> createState() => _MarkerColumnState();
 }
 
-/// The rows last derived per segment, so a segment's columns split its text
-/// once per change.
-final _rowsCache = Expando<(String, List<RowSpec>)>('marker-column-rows');
-
-List<RowSpec> _rowsOf(SegmentViewState host) {
-  final text = host.text;
-  final cached = _rowsCache[host];
-  if (cached != null && cached.$1 == text) return cached.$2;
-  final rows = splitRows(text, atSegmentStart: true);
-  _rowsCache[host] = (text, rows);
-  return rows;
-}
-
 /// An interactive column's editor row, segment and row spec.
 typedef _Place = ({EditorRow row, SegmentViewState host, RowSpec spec});
 
+/// What a column shows of its row's selection state: whether its marker is
+/// revealed, and whether the segment selection spans its row.
+typedef _Shown = ({bool revealed, bool selected});
+
+/// [place]'s selection state as its column shows it (none outside a
+/// segment's rows).
+_Shown _shownOf(_Place? place) {
+  if (place == null) return (revealed: false, selected: false);
+  final selection = place.host.selection;
+  final spec = place.spec;
+  return (
+    revealed:
+        place.host.widget.revealGate.value &&
+        place.row.controller.selection.isValid,
+    selected:
+        selection.isValid &&
+        !selection.isCollapsed &&
+        selection.start <= spec.start &&
+        selection.end >= spec.textEnd,
+  );
+}
+
 class _MarkerColumnState extends State<MarkerColumn> {
   List<Listenable> _watched = const [];
+
+  /// What the column showed at its last build.
+  _Shown? _shown;
 
   @override
   void dispose() {
@@ -161,13 +189,13 @@ class _MarkerColumnState extends State<MarkerColumn> {
     final row = context.findAncestorWidgetOfExactType<EditorRow>();
     final host = context.findAncestorStateOfType<SegmentViewState>();
     if (row == null || host == null) return null;
-    final rows = _rowsOf(host);
-    if (row.index >= rows.length) return null;
-    return (row: row, host: host, spec: rows[row.index]);
+    final spec = host.rowSpec(row.index);
+    if (spec == null) return null;
+    return (row: row, host: host, spec: spec);
   }
 
-  /// Rebuilds on every change of [next] (and stops listening to the
-  /// previous ones).
+  /// Rebuilds on a change of [next] that changes what the column shows (and
+  /// stops listening to the previous ones).
   void _watch(List<Listenable> next) {
     var same = next.length == _watched.length;
     for (var i = 0; same && i < next.length; i++) {
@@ -184,24 +212,36 @@ class _MarkerColumnState extends State<MarkerColumn> {
   }
 
   void _changed() {
-    if (mounted) setState(() {});
+    if (!mounted || _shownOf(_place()) == _shown) return;
+    debugMarkerColumnSetStates++;
+    setState(() {});
   }
 
+  /// The checkbox state this column last built (a task's `done`), or null.
+  bool? _shownDone;
+
+  /// A click toggles the task as the column shows it: a second press
+  /// before the column rebuilt (two presses in one frame) finds the task
+  /// already toggled and does nothing (WI #128).
   void _toggle() {
     final place = _place();
-    if (place == null) return;
+    if (place == null || place.spec.done != _shownDone) return;
     final edit = toggleTask(place.host.text, place.spec);
     if (edit != null) place.host.applyEdit(edit);
   }
 
   @override
   Widget build(BuildContext context) {
+    debugMarkerColumnBuilds++;
     final place = _place();
     _watch([
       if (place != null) ...[
         place.row.controller,
         place.host.widget.revealGate,
-        place.host.widget.controller,
+        // Where the segment selection meets the row's edges (whether it
+        // spans the row), notified by the host once its rows hold it.
+        place.host.rowEdgesOf(place.row.controller) ??
+            place.host.widget.controller,
       ],
     ]);
     final RowSpec? spec;
@@ -212,18 +252,11 @@ class _MarkerColumnState extends State<MarkerColumn> {
       spec = rows.isEmpty ? null : rows.first;
     }
     final kind = spec == null ? null : markerColumnKind(spec.kind);
+    _shownDone = spec?.done;
 
-    final revealed =
-        place != null &&
-        place.host.widget.revealGate.value &&
-        place.row.controller.selection.isValid;
-    final selection = place?.host.selection;
-    final selected =
-        selection != null &&
-        selection.isValid &&
-        !selection.isCollapsed &&
-        selection.start <= spec!.start &&
-        selection.end >= spec.textEnd;
+    final shown = _shown = _shownOf(place);
+    final revealed = shown.revealed;
+    final selected = shown.selected;
 
     final line = lineHeight(LineHeightKind.item);
     final width = revealed && kind == MarkerColumnKind.task
@@ -276,9 +309,27 @@ class _MarkerColumnState extends State<MarkerColumn> {
       );
     }
     if (place != null) column = _MarkerColumnArea(child: column);
-    return TextFieldTapRegion(child: column);
+    return _MarkerColumnBox(child: TextFieldTapRegion(child: column));
   }
 }
+
+/// Whether [node] is a [MarkerColumn]'s outermost render object (WI #127):
+/// the row-geometry accessor's text-slot lookup (`textSlotBox`) skips its
+/// subtree, so a marker's own text (a number, a revealed marker) never
+/// stands in for its row's text.
+bool isMarkerColumnBox(RenderObject node) => node is _RenderMarkerColumnBox;
+
+/// Marks a [MarkerColumn]'s subtree in the render tree (layout, paint and
+/// hit testing are its child's).
+class _MarkerColumnBox extends SingleChildRenderObjectWidget {
+  const _MarkerColumnBox({required super.child});
+
+  @override
+  RenderObject createRenderObject(BuildContext context) =>
+      _RenderMarkerColumnBox();
+}
+
+class _RenderMarkerColumnBox extends RenderProxyBox {}
 
 /// Whether [result]'s hit-test path passes through an editor row's
 /// [MarkerColumn] (not a read-only one or one outside a segment's rows):
@@ -339,6 +390,7 @@ class _MarkerPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
+    debugMarkerColumnPaints++;
     if (fill case final fill?) {
       canvas.drawRect(Offset.zero & size, Paint()..color = fill);
     }

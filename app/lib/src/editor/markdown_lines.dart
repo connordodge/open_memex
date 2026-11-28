@@ -143,6 +143,11 @@ class MdLine {
       '$separatorEnd, level $level, number $number, done $done)';
 }
 
+/// Test-only work counter: how many times [classifyLines] ran. Plain
+/// top-level int (pure Dart: no `package:meta`, ruling D9). Never read by
+/// production code.
+int debugClassifyLinesCalls = 0;
+
 /// Classifies every line of [segmentText] (Spec R36).
 ///
 /// Lines split at `\n` and `\r\n` only. The result always covers the whole
@@ -174,6 +179,7 @@ class MdLine {
 /// a body starts a new table (ruling D23). Fence and frontmatter lines are
 /// never table lines.
 List<MdLine> classifyLines(String segmentText, {required bool atSegmentStart}) {
+  debugClassifyLinesCalls++;
   final ranges = _scanLines(segmentText);
   final lines = <MdLine>[];
   var next = 0;

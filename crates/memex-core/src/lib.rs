@@ -2,6 +2,8 @@
 
 pub mod agents;
 pub mod app_reads;
+pub mod attachments;
+pub mod attachments_extract;
 pub mod backup;
 pub mod canvas;
 pub mod chunker;
@@ -15,6 +17,7 @@ pub mod indexer;
 pub mod link_extractor;
 pub mod links;
 pub mod note_edits;
+pub mod note_search;
 pub mod notes;
 pub mod schema;
 pub mod search;
@@ -43,6 +46,7 @@ pub use canvas::{
 };
 pub use chrono::FixedOffset;
 pub use error::{MemexError, Result};
+pub use note_search::{note_search, NoteSearch, NoteSearchHit, SearchEmbedder, Semantic};
 pub use notes::{Note, NoteId};
 pub use search::{search, SearchFilters, SearchHit, SearchMode, SearchOptions, SearchResults};
 pub use vault::{now_unix_ms, Vault};

@@ -35,6 +35,7 @@ import 'package:open_memex_app/src/theme/app_theme.dart';
 import 'package:open_memex_app/src/theme/colors.dart';
 import 'package:open_memex_app/src/widgets/editor/echo_arrival_highlight.dart';
 import 'package:open_memex_app/src/widgets/editor/line_boxes.dart';
+import 'package:open_memex_app/src/widgets/editor/paragraph_line_boxes.dart';
 import 'package:open_memex_app/src/widgets/editor/segment_view.dart';
 import 'package:open_memex_app/src/widgets/editor/text_segment.dart';
 import 'package:open_memex_app/src/widgets/note_editor.dart';
@@ -343,12 +344,33 @@ Rect _wi428Viewport(WidgetTester tester) => tester.getRect(
 
 /// Each visual line of the prose [row]: its global rect.
 List<Rect> _wi428LineRects(WidgetTester tester, Finder row) {
-  final editable = findRenderEditable(tester.renderObject(row))!;
+  // The row's text is a field while it is the active row, else a paragraph
+  // (WI #132, Req 38).
+  final object = tester.renderObject(row);
+  final editable = findRenderEditable(object);
+  final LineBoxSource boxes;
+  if (editable != null) {
+    boxes = RenderEditableLineBoxes(editable);
+  } else {
+    RenderParagraph? paragraph;
+    void visit(RenderObject node) {
+      if (paragraph != null) return;
+      if (node is RenderParagraph) {
+        paragraph = node;
+      } else {
+        node.visitChildren(visit);
+      }
+    }
+
+    visit(object);
+    boxes = RenderParagraphLineBoxes(paragraph!);
+  }
+  final box = boxes.box;
   return [
-    for (final line in RenderEditableLineBoxes(editable).lines)
+    for (final line in boxes.lines)
       Rect.fromPoints(
-        editable.localToGlobal(Offset(0, line.top)),
-        editable.localToGlobal(Offset(editable.size.width, line.bottom)),
+        box.localToGlobal(Offset(0, line.top)),
+        box.localToGlobal(Offset(box.size.width, line.bottom)),
       ),
   ];
 }

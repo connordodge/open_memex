@@ -65,9 +65,21 @@ const V6_REGULAR_TABLES: [&str; 20] = [
 /// The tables V7 adds.
 const V7_TABLES: [&str; 3] = ["agent_activity", "learned_words", "content_revision"];
 
-/// The tables later versions add, so V6 -> latest also makes them: V8's
-/// `note_revisions` (WI #8).
-const LATER_TABLES: [&str; 1] = ["note_revisions"];
+/// The regular tables later versions add, so V6 -> latest also makes them:
+/// V8's `note_revisions` (WI #8), and V9's `attachments`,
+/// `attachment_chunks` and `note_attachments` (WI #135).
+const LATER_TABLES: [&str; 4] = [
+    "note_revisions",
+    "attachments",
+    "attachment_chunks",
+    "note_attachments",
+];
+
+/// Whether `table` is V9's `attachment_chunk_fts` or one of its FTS5 shadow
+/// tables (WI #135): new after V6 -> latest, but exempt from the triggers.
+fn is_later_index_table(table: &str) -> bool {
+    table == "attachment_chunk_fts" || table.starts_with("attachment_chunk_fts_")
+}
 
 /// The three revision triggers of each triggered table: (suffix, event).
 const TRIGGER_KINDS: [(&str, &str); 3] = [("ai", "INSERT"), ("au", "UPDATE"), ("ad", "DELETE")];
@@ -583,12 +595,15 @@ fn squash(sql: &str) -> String {
 
 /// A table that carries no revision triggers (requirement 8, ruling D2):
 /// `content_revision` itself, SQLite's own tables, virtual tables and the
-/// shadow tables of `chunk_fts` and `chunk_vec`.
+/// shadow tables of `chunk_fts` and `chunk_vec`, and since V9 (Spec #123
+/// R50) of `attachment_chunk_fts` and `attachment_chunk_vec`.
 fn is_exempt(name: &str, sql: &str) -> bool {
     name == "content_revision"
         || name.starts_with("sqlite_")
         || name.starts_with("chunk_fts_")
         || name.starts_with("chunk_vec_")
+        || name.starts_with("attachment_chunk_fts_")
+        || name.starts_with("attachment_chunk_vec_")
         || squash(sql).starts_with("createvirtualtable")
 }
 
@@ -702,8 +717,8 @@ fn now_ms() -> i64 {
 // ---- AC 1: a fresh vault at V7 ----------------------------------------------------------------
 
 #[test]
-fn app_schema_version_is_8() {
-    assert_eq!(schema::APP_SCHEMA_VERSION, 8);
+fn app_schema_version_is_9() {
+    assert_eq!(schema::APP_SCHEMA_VERSION, 9);
 }
 
 #[test]
@@ -719,7 +734,7 @@ fn fresh_vault_opens_at_v7_with_the_v7_tables_and_index() {
         conn,
         "SELECT CAST(version AS TEXT) FROM schema_version ORDER BY version",
     );
-    assert_eq!(versions, ["1", "2", "3", "4", "5", "6", "7", "8"]);
+    assert_eq!(versions, ["1", "2", "3", "4", "5", "6", "7", "8", "9"]);
     for t in V7_TABLES {
         assert_eq!(
             count(
@@ -911,11 +926,14 @@ fn v6_fixture_migrates_to_v7_and_keeps_every_row_of_every_v6_table() {
         &conn,
         "SELECT CAST(version AS TEXT) FROM schema_version ORDER BY version",
     );
-    assert_eq!(versions, ["1", "2", "3", "4", "5", "6", "7", "8"]);
+    assert_eq!(versions, ["1", "2", "3", "4", "5", "6", "7", "8", "9"]);
     // The row the queue already held is kept as it was.
     assert_eq!(pending(&conn).get(N_QUEUED), Some(&QUEUED_AT));
     // Only V7's own tables (and the later versions' ones) are new.
-    let new_tables: BTreeSet<&String> = after.keys().filter(|t| !before.contains_key(*t)).collect();
+    let new_tables: BTreeSet<&String> = after
+        .keys()
+        .filter(|t| !before.contains_key(*t) && !is_later_index_table(t))
+        .collect();
     assert_eq!(
         new_tables,
         V7_TABLES
@@ -1045,6 +1063,7 @@ fn v6_fixture_with_chunk_vec_gets_three_triggers_on_every_regular_table_and_none
             || t == "chunk_vec"
             || t.starts_with("chunk_fts_")
             || t.starts_with("chunk_vec_")
+            || is_later_index_table(t)
             || t.starts_with("sqlite_");
         if exempt {
             assert!(
@@ -1068,8 +1087,8 @@ fn v6_fixture_with_chunk_vec_gets_three_triggers_on_every_regular_table_and_none
     }
 
     // Exactly the V6 regular tables, schema_version included, V7's two new
-    // content tables and V8's note_revisions carry triggers: 23 tables, 69
-    // triggers.
+    // content tables, V8's note_revisions and V9's three regular tables
+    // carry triggers: 26 tables, 78 triggers.
     let mut expected: BTreeSet<String> = V6_REGULAR_TABLES.iter().map(|t| t.to_string()).collect();
     expected.insert("agent_activity".into());
     expected.insert("learned_words".into());
@@ -1081,7 +1100,7 @@ fn v6_fixture_with_chunk_vec_gets_three_triggers_on_every_regular_table_and_none
             &conn,
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger'"
         ),
-        69
+        78
     );
 }
 

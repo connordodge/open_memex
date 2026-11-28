@@ -1,9 +1,14 @@
+import 'dart:typed_data';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 
 import '../../memex_cli.dart';
+import '../../state/file_revealer.dart';
+import '../../state/url_opener.dart';
 import '../vault_access.dart';
 import 'agents.dart';
+import 'attachments.dart';
 import 'canvas.dart';
 import 'daily.dart';
 import 'feedback.dart';
@@ -11,6 +16,7 @@ import 'graph.dart';
 import 'hosted_client.dart';
 import 'notes.dart';
 import 'revision.dart';
+import 'search.dart';
 import 'tags.dart';
 import 'topics.dart';
 import 'words.dart';
@@ -34,15 +40,28 @@ const vaultNotFoundCode = 'vault_not_found';
 ///
 /// [onVaultGone] runs when a request of a live composite fails with C1
 /// `vault_not_found` (Req 53a); the error still reaches the caller.
+/// [urlOpener] and [fileRevealer] go to [attachments] (`urlOpenerProvider`
+/// and `fileRevealerProvider` in the app; null: the system ones).
 class HostedVaultAccess implements VaultAccess {
   HostedVaultAccess({
     required HostedClient client,
     required String vaultName,
     void Function()? onVaultGone,
-  }) : this._(_ComposedClient(client, onVaultGone), vaultName);
+    UrlOpener? urlOpener,
+    FileRevealer? fileRevealer,
+  }) : this._(
+         _ComposedClient(client, onVaultGone),
+         vaultName,
+         urlOpener,
+         fileRevealer,
+       );
 
-  HostedVaultAccess._(_ComposedClient client, this.vaultName)
-    : _client = client,
+  HostedVaultAccess._(
+    _ComposedClient client,
+    this.vaultName,
+    UrlOpener? urlOpener,
+    FileRevealer? fileRevealer,
+  ) : _client = client,
       notes = HostedNotesAccess(client: client, vaultName: vaultName),
       agents = HostedAgentsAccess(client: client, vaultName: vaultName),
       daily = HostedDailyAccess(client: client, vaultName: vaultName),
@@ -53,6 +72,13 @@ class HostedVaultAccess implements VaultAccess {
       graph = HostedGraphAccess(client: client, vaultName: vaultName),
       tags = HostedTagsAccess(client: client, vaultName: vaultName),
       words = HostedWordsAccess(client: client, vaultName: vaultName),
+      search = HostedSearchAccess(client: client, vaultName: vaultName),
+      attachments = HostedAttachmentsAccess(
+        client: client,
+        vaultName: vaultName,
+        urlOpener: urlOpener,
+        fileRevealer: fileRevealer,
+      ),
       _revision = HostedRevision(client, vaultName);
 
   final _ComposedClient _client;
@@ -89,6 +115,14 @@ class HostedVaultAccess implements VaultAccess {
 
   @override
   final HostedWordsAccess words;
+
+  /// A [HostedSearchAccess] (#75).
+  @override
+  final SearchAccess search;
+
+  /// A [HostedAttachmentsAccess] (Spec #123 V1).
+  @override
+  final HostedAttachmentsAccess attachments;
 
   final HostedRevision _revision;
 
@@ -170,6 +204,59 @@ class _ComposedClient implements HostedClient {
       body: body,
       timeout: timeout,
     ),
+    operation,
+  );
+
+  /// The open's client keeps the session's attachment route check, so
+  /// every composite over it shares one.
+  @override
+  Future<bool>? get attachmentRoutesCheck => _inner.attachmentRoutesCheck;
+
+  @override
+  set attachmentRoutesCheck(Future<bool>? check) =>
+      _inner.attachmentRoutesCheck = check;
+
+  @override
+  Future<HostedBytes> uploadBytes(
+    String vaultName,
+    String path,
+    Uint8List bytes, {
+    required String operation,
+    Map<String, String>? query,
+  }) => _guard(
+    () => _inner.uploadBytes(
+      vaultName,
+      path,
+      bytes,
+      operation: operation,
+      query: query,
+    ),
+    operation,
+  );
+
+  @override
+  Future<HostedBytes> downloadBytes(
+    String vaultName,
+    String path, {
+    required String operation,
+    int? expectedBytes,
+  }) => _guard(
+    () => _inner.downloadBytes(
+      vaultName,
+      path,
+      operation: operation,
+      expectedBytes: expectedBytes,
+    ),
+    operation,
+  );
+
+  @override
+  Future<HostedBytes> head(
+    String vaultName,
+    String path, {
+    required String operation,
+  }) => _guard(
+    () => _inner.head(vaultName, path, operation: operation),
     operation,
   );
 

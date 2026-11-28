@@ -776,7 +776,7 @@ void main() {
           (
             'Cmd plus another key does not step and is not handled',
             [_meta],
-            LogicalKeyboardKey.keyK,
+            LogicalKeyboardKey.keyJ,
           ),
         ]) {
       testWidgets(name, (tester) async {
@@ -812,15 +812,15 @@ void main() {
       expect(h.active, _a, reason: 'the releases did not step');
       // A repeat of a key that is not a bracket is not claimed either.
       await tester.sendKeyDownEvent(_meta, platform: 'macos');
-      await tester.sendKeyDownEvent(LogicalKeyboardKey.keyK, platform: 'macos');
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.keyJ, platform: 'macos');
       expect(
         await tester.sendKeyRepeatEvent(
-          LogicalKeyboardKey.keyK,
+          LogicalKeyboardKey.keyJ,
           platform: 'macos',
         ),
         isFalse,
       );
-      await tester.sendKeyUpEvent(LogicalKeyboardKey.keyK, platform: 'macos');
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.keyJ, platform: 'macos');
       await tester.sendKeyUpEvent(_meta, platform: 'macos');
       await pumpFrames(tester);
       expect(h.active, _a);

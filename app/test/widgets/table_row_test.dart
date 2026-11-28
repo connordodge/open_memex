@@ -80,7 +80,7 @@ void _expectRows(String text, List<RowKind> kinds) {
 
 /// The Offstage ancestors of row [r]'s field that hide it.
 Finder _hidingOffstage(int s, int r) => find.ancestor(
-  of: tableRowField(s, r),
+  of: tableRowText(s, r),
   matching: find.byWidgetPredicate(
     (w) => w is Offstage && w.offstage,
     description: 'Offstage(offstage: true)',
@@ -275,9 +275,11 @@ void main() {
         expect(_hidingOffstage(0, 1), findsOneWidget);
         expect(tableRowController(tester, 0, 1).text, _table);
         expect(tableRowController(tester, 0, 1).tableRevealed, isFalse);
-        // The prose rows around it are plain fields.
+        // The prose rows around it show their text: the field of the active
+        // row, the idle text of the other (TEST-CHANGE, WI #132, Req 38).
         expect(tableRowFieldOnstage(0, 0), findsOneWidget);
-        expect(tableRowFieldOnstage(0, 2), findsOneWidget);
+        expect(tableRowFieldOnstage(0, 2), findsNothing);
+        expect(tableRowTextOnstage(0, 2), findsOneWidget);
         expect(tester.takeException(), isNull);
       }, variant: macOnly);
     }
@@ -324,14 +326,17 @@ void main() {
         expectTableRendered(0, 1);
         final ctrl = tableRowController(tester, 0, 1);
         final node = tableRowFocusNode(tester, 0, 1);
-        final state = tableRowFieldState(tester, 0, 1);
+        // TEST-CHANGE (WI #132, Req 38): an idle row has no field, so there
+        // is no field state to keep across the reveal; the row's controller
+        // and focus node are the host's and stay.
+        expect(tableRowField(0, 1), findsNothing, reason: 'the row is idle');
 
         await body.placeCaret(_at('Alpha', 2));
         expectTableRevealed(0, 1);
         expect(_hidingOffstage(0, 1), findsNothing);
         expect(tableRowController(tester, 0, 1), same(ctrl));
         expect(tableRowFocusNode(tester, 0, 1), same(node));
-        expect(tableRowFieldState(tester, 0, 1), same(state));
+        expect(tableRowField(0, 1), findsOneWidget, reason: 'the active row');
         expect(node.hasFocus, isTrue);
 
         await body.placeCaret(_belowStart);
@@ -339,7 +344,6 @@ void main() {
         expect(_hidingOffstage(0, 1), findsOneWidget);
         expect(tableRowController(tester, 0, 1), same(ctrl));
         expect(tableRowFocusNode(tester, 0, 1), same(node));
-        expect(tableRowFieldState(tester, 0, 1), same(state));
       },
       variant: macOnly,
     );
@@ -1182,9 +1186,8 @@ void main() {
         expect(controller.tableRevealed, isTrue);
         expect(tableGrid(0, 1), findsOneWidget);
 
-        final editable = findRenderEditable(
-          tester.renderObject(tableRowField(0, 1)),
-        )!;
+        // TEST-CHANGE (WI #132, Req 38): the idle row's text is a paragraph.
+        final editable = segmentRowTextBox(tester, 0, 1);
         expect(rowBoxes()!.box, same(editable));
         await tester.pump();
         expectTableRevealed(0, 1);
@@ -1200,9 +1203,7 @@ void main() {
         expectTableRendered(0, 1);
         final grid = tableGridState(tester, 0, 1).lineBoxes()!;
         expect(tableEditorRowWidget(tester, 0, 1).boxes()!.box, same(grid.box));
-        final prose = findRenderEditable(
-          tester.renderObject(tableRowField(0, 0)),
-        )!;
+        final prose = segmentRowTextBox(tester, 0, 0);
         expect(tableEditorRowWidget(tester, 0, 0).boxes()!.box, same(prose));
       },
       variant: macOnly,

@@ -18,15 +18,17 @@ Two ways to use it: a Flutter macOS desktop app for typing/editing notes, and an
 sudo ln -s "/Applications/Open Memex.app/Contents/MacOS/memex" /usr/local/bin/memex
 ```
 
-**Upgrading.**
+**Upgrading.** From the first Self-update Release on, the app offers each new Release itself. It checks once a day at launch and whenever you choose Open Memex → Check for Updates…, and an update installs when you choose relaunch. If you are on v0.4.0 or earlier, install the first Self-update Release by hand:
 
 1. Read the Upgrade notes in the new Release, and back up your vault first (see [`docs/backups.md`](docs/backups.md)).
 2. Quit the app and any MCP client, download the new DMG and replace the app in Applications.
 3. Restart your MCP clients so they start the new Bundled memex.
 
+An update installed by Self-update replaces the Bundled memex too. Connected agents keep the old memex until they restart, so restart your MCP clients after it as well.
+
 To hear about new Releases, open the repo on GitHub and choose Watch → Custom → Releases.
 
-**Privacy.** The app makes no network request unless you connect a hosted vault. `memex --with-embeddings` downloads its embedding model once, the first time you use it.
+**Privacy.** The app fetches the Appcast from GitHub Pages (`connordodge.github.io`) once a day at launch and when you choose Check for Updates…. It downloads a Release's DMG from GitHub only when you choose install. Neither request sends vault data. If you connect a hosted vault, the app also talks to that server. `memex --with-embeddings` downloads its embedding model once, the first time you use it.
 
 Open Memex is released under the [MIT license](LICENSE). To contribute, see [CONTRIBUTING.md](CONTRIBUTING.md); to report a vulnerability, see [SECURITY.md](SECURITY.md).
 
@@ -41,13 +43,14 @@ Open Memex is released under the [MIT license](LICENSE). To contribute, see [CON
   - `memex links --vault <path> --note-id <id> [--dir in|out|both] [--kind <k>]` — print the link tree
   - `memex add-link --vault <path> --from <id> --to <id> [--kind <k>] [--label <s>]` — insert a wikilink, idempotent
   - `memex serve --vault <path>` — run as an MCP server over stdio (for Claude Desktop, etc.)
-  - `memex serve --root <dir> --listen <host:port>` — run the vault server: serve every vault in `<dir>` over HTTP to the app and agents on your trusted LAN or tailnet. `--listen` has no default. See [`docs/hosted-vault.md`](docs/hosted-vault.md) for a NAS, Linux or an always-on Mac
+  - `memex serve --root <dir> --listen <host:port>` — run the vault server: serve every vault in `<dir>` over HTTP to the app and agents on your trusted LAN or tailnet. `--listen` has no default. See [`docs/hosted-vault.md`](docs/hosted-vault.md) for the Docker image `ghcr.io/connordodge/memex` on a NAS or Unraid, and for Linux or an always-on Mac
   - `memex serve --remote <url>` — bridge stdio MCP to a hosted vault (`<server-url>/vaults/<name>/mcp`, token from `MEMEX_ACCESS_TOKEN`), for Claude Desktop and Raycast
   - `memex vault check --vault <path>` — exit 0 when the folder is safe for a vault (not on a network drive)
   - `memex backup --vault <path> --dest <folder> [--keep <n>] [--if-changed]` — back up a vault into a folder as one `.memex.zip` file and print the result as JSON; it never opens the vault for writing, so it is safe to run while the app is open. Backups also run from the app and the vault server; see [`docs/backups.md`](docs/backups.md)
   - `memex restore --from <file> --to <new-folder>` — make a new vault folder from a backup file (see [`docs/backups.md`](docs/backups.md))
   - `memex add --role daily|topic` — create a daily note or a topic note (`memex add --vault <path> --title 2026-09-05 --role daily`)
   - `memex append --vault <path> [--date YYYY-MM-DD] [TEXT]` — quick entry: append text to a daily note (today by default; text from the argument or stdin) and print the new block ids, the content version and the day's prior review state as JSON. The one CLI write meant for automation (Raycast, Alfred, Shortcuts, shell aliases).
+  - `memex attach --vault <path> <file> [--name <name>]` — store a file (up to 100 MB) in the vault's `objects/` folder and print `{markdown, path, name, size, type}` as JSON; put the `markdown` line in a note to show it. No note changes
   - `memex prompt review` / `memex prompt capture` — print the agent prompt texts
   - `memex rm --vault <path> --note-id <id> --expected-version <v>` — delete a note (people only; there is no MCP delete tool)
   - `memex excerpt rm` — remove one excerpt from a topic note; `memex footer add --vault <path> --note-id <id> --topic-note-id <id>` — add a topic to a note's Note footer
@@ -70,7 +73,7 @@ Open Memex is released under the [MIT license](LICENSE). To contribute, see [CON
 - Hybrid search: FTS5 (BM25) + optional vector (cosine) fused via Reciprocal Rank Fusion
 - Local embeddings via `fastembed-rs` (`BGE-small-en-v1.5`, 384-dim) — opt-in with `--with-embeddings`
 - **Wikilinks**: `[[Title]]`, `[[Title~kind]]`, `[[Title|alias]]`, `[[Title~kind|alias]]`. Two-tier kind vocabulary — four built-ins (`references`, `extends`, `contradicts`, `example-of`) get curated section headings + frontmatter shortcuts; user-defined kebab-case kinds are first-class for storage and `neighbors()` queries. See [`docs/wikilinks.md`](docs/wikilinks.md).
-- 38 MCP tools:
+- 40 MCP tools:
   - search and links: `search`, `get_note` (with `include_backlinks`), `create_note` (with `role`), `edit_note`, `neighbors`, `add_link`, `update_link`
   - canvases (see [`docs/canvas.md`](docs/canvas.md)): `list_canvases`, `get_canvas`, `create_canvas`, `add_to_canvas`, `remove_from_canvas`, `move_node`, `delete_canvas`
   - review: `list_unreviewed_days`, `get_daily_note_changes`, `mark_day_reviewed`
@@ -78,6 +81,7 @@ Open Memex is released under the [MIT license](LICENSE). To contribute, see [CON
   - capture and excerpts: `append_to_daily_note`, `add_excerpt`, `remove_excerpt`
   - Smart Folders and settings: `list_smart_folders`, `create_smart_folder`, `update_smart_folder`, `delete_smart_folder`, `add_to_smart_folder`, `remove_from_smart_folder`, `get_vault_settings`
   - tags and footer topics: `list_tags`, `tag_note`, `untag_note`, `add_footer_topic`
+  - attachments: `add_attachment` (stores a file and returns the markdown for the agent to place with `create_note`, `edit_note` or `append_to_daily_note`; it refuses hidden files and files in the vault folder outside `objects/`), `get_attachment` (reads an image, a text file's text, or a file's details)
 - `edit_note` is the only tool that edits the text you wrote in an existing note (see [Agent note edits](#agent-note-edits)); `update_vault_guide` rewrites the Vault Guide. `add_link`, `update_link`, `add_excerpt`, `remove_excerpt` and `remove_excerpt_block` write only link and transclusion text, and they also respect Agent read-only. No tool renames or deletes a note. The only write into a daily note body is `append_to_daily_note`; `tag_note`, `untag_note` and `add_footer_topic` write Note footer text only, never the person's own text.
 - 2 MCP prompts: `review_daily_notes` and `capture` (the same texts print with `memex prompt review` and `memex prompt capture`)
 

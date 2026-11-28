@@ -37,6 +37,7 @@ use crate::server::request_clock::RequestClock;
 use crate::state::AppState;
 
 // One `#[tool_router]` per area (architect ruling D7), composed in `Memex::new`.
+pub mod attachments;
 pub mod daily;
 pub mod edits;
 pub mod excerpts;
@@ -81,7 +82,8 @@ impl Memex {
                 + Self::review_router()
                 + Self::settings_router()
                 + Self::feedback_router()
-                + Self::tags_router(),
+                + Self::tags_router()
+                + Self::attachments_router(),
             Self::prompt_router(),
         )
     }
@@ -120,6 +122,9 @@ pub struct SearchResultEnvelope {
     pub mode: SearchMode,
     pub results: Vec<search::SearchHit>,
     pub truncated: bool,
+    /// The matching attachments (Spec #123 R48); absent when none matched.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<search::AttachmentMatch>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -432,6 +437,7 @@ impl Memex {
                 mode,
                 results: res.hits,
                 truncated: res.truncated,
+                attachments: res.attachments,
             })
             .unwrap_or_else(|e| err_payload("search.serialize", &e.to_string())),
             Err(e) => err_from("search", &e),
@@ -1226,8 +1232,9 @@ impl ServerHandler for Memex {
             .sessions
             .as_ref()
             .and_then(|s| s.on_request(&context, RequestKind::ToolCall));
-        // The activity log hook (#451): only a write with a session is logged.
-        let Some(session) = session.filter(|_| meta::is_write(&request.name)) else {
+        // The activity log hook (#451): only a logged write with a session is
+        // logged (not `add_attachment`, which changes no note).
+        let Some(session) = session.filter(|_| meta::is_logged(&request.name)) else {
             let tcc = ToolCallContext::new(self, request, context);
             return self.tool_router.call(tcc).await;
         };

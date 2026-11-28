@@ -41,6 +41,10 @@ class OmColors {
   static final accentGlow = const Color(0xFF7CFFB2).withAlpha(46);
   static final successBg = const Color(0xFF7CFFB2).withAlpha(26);
 
+  /// The Command palette's mark highlight (pack 76): accent at 15 %
+  /// (alpha 38). Not [successBg] (alpha 26).
+  static final accentMark = const Color(0xFF7CFFB2).withAlpha(38);
+
   // Semantic.
   static const info = Color(0xFF7AA2FF);
   static const warn = Color(0xFFFFD27A);
@@ -48,6 +52,14 @@ class OmColors {
   static final infoBg = const Color(0xFF7AA2FF).withAlpha(26);
   static final warnBg = const Color(0xFFFFD27A).withAlpha(26);
   static final dangerBg = const Color(0xFFFF7A8A).withAlpha(26);
+
+  // Find in note (#61 F3, pack 83). Not [warnBg] (10%).
+  /// An other match's fill: [warn] at 0x33 (20%).
+  static const findMatch = Color(0x33FFD27A);
+
+  /// An other match's 1 px inside border and a hidden match's outline:
+  /// [warn] at 0x80 (50%).
+  static const findMatchLine = Color(0x80FFD27A);
 
   // Agent (AI activity).
   static const agent = Color(0xFFB9A6FF);

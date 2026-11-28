@@ -225,7 +225,31 @@ Future<Wi362Env> wi362PumpLocal(
     h.container.read(selectedNoteIdProvider.notifier).state = '01M362';
     await wi362Settle(tester);
   }
+  await wi362DrainUiState(tester, [openPath, otherPath]);
   return env;
+}
+
+/// Waits (in real time, pumping frames) until every queued UI-state write for
+/// [vaultPaths] has finished. The writes are chained in the test's fake zone,
+/// so a write whose file IO outlives the settle windows would otherwise leave
+/// the teardown's `flush()` waiting on a microtask nothing pumps: the test
+/// then hangs to the 10-minute timeout and the next one fails `!inTest`.
+Future<void> wi362DrainUiState(
+  WidgetTester tester,
+  List<String> vaultPaths,
+) async {
+  for (final path in vaultPaths) {
+    var drained = false;
+    unawaited(
+      UiStateStore(vaultPath: path).flush().whenComplete(() => drained = true),
+    );
+    for (var i = 0; i < 200 && !drained; i++) {
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 10)),
+      );
+      await tester.pump();
+    }
+  }
 }
 
 /// The app with the hosted vault `seed` on nas open (opened through the

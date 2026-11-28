@@ -125,6 +125,9 @@ class _Wi202MonoBoxes implements LineBoxSource {
 
   @override
   int offsetAt(Offset point) => throw UnimplementedError();
+
+  @override
+  LineBox lineAt(int offset) => lineHolding(_lines, offset);
 }
 
 Note _wi202Note(String content) => Note(
@@ -149,12 +152,13 @@ Finder _wi202Field(int s, int r) => find.descendant(
 );
 
 LivePreviewController _wi202Ctrl(WidgetTester tester, int s, int r) =>
-    tester.widget<EditableText>(_wi202Field(s, r)).controller
-        as LivePreviewController;
+    segmentRowController(tester, s, r); // idle rows too (WI #132, Req 38)
 
-/// The global left of row [s]-[r]'s field.
-double _wi202FieldLeft(WidgetTester tester, int s, int r) =>
-    tester.getTopLeft(_wi202Field(s, r)).dx;
+/// The global left of row [s]-[r]'s text slot (its field's while it is the
+/// active row, WI #132).
+double _wi202FieldLeft(WidgetTester tester, int s, int r) => tester
+    .getTopLeft(find.byKey(Key('editor-row-$s-$r'), skipOffstage: false))
+    .dx;
 
 void main() {
   holdFontFetches();
@@ -266,6 +270,8 @@ void main() {
         final end = content.indexOf(' 2 |') + 4;
         // The field is offstage under the grid while rendered (#204), so the
         // all-fields-onstage focusSegmentAt cannot be used.
+        // TEST-CHANGE (WI #132, Req 38): only the active row has a field.
+        await activateSegmentRow(tester, 0, 1);
         await tester.showKeyboard(_wi202Field(0, 1));
         await tester.pump();
         handle.select(TextSelection.collapsed(offset: end));

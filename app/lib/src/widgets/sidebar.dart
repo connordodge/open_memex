@@ -14,18 +14,22 @@ import '../state/hosted_connection_state.dart';
 import '../state/settings.dart';
 import '../state/sidebar_mode_state.dart';
 import '../state/tabs_state.dart';
-import '../state/vault_access_state.dart';
 import '../state/vault_open_controller.dart';
 import '../state/vault_open_hosted.dart';
 import '../state/vault_paths.dart';
 import '../state/vault_state.dart';
+import '../state/workspace_actions.dart';
 import '../theme/colors.dart';
 import '../theme/typography.dart';
-import '../vault_access/errors.dart';
+import '../updater/update_controller.dart';
+import '../updater/update_modal.dart';
+import '../updater/update_state.dart';
 import '../vault_access/vault_async_view.dart';
 import 'agents/agent_footer.dart';
 import 'atoms.dart';
 import 'backups/backup_entry.dart';
+import 'command_palette/command_palette.dart';
+import 'command_palette/palette_row.dart' show PaletteKeys;
 import 'dialog_button.dart' show keyboardButtonShortcuts;
 import 'picker/vault_picker_modal.dart';
 import 'sidebar/canvases_rail.dart';
@@ -40,8 +44,12 @@ import 'vault_open_refusal.dart';
 /// canvases rail → the Days/Topics switch over the Days list or the note
 /// tree → agent activity footer (placeholder).
 class Sidebar extends ConsumerWidget {
-  const Sidebar({super.key, required this.onNewNote});
+  const Sidebar({super.key, required this.onNewNote, this.onCommandBar});
   final VoidCallback onNewNote;
+
+  /// The Command bar's press. Null opens the Command palette over the
+  /// sidebar's context.
+  final VoidCallback? onCommandBar;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -71,7 +79,9 @@ class Sidebar extends ConsumerWidget {
         children: [
           _BrandRow(),
           const OmHairline(),
-          _CommandRow(onTap: () {}),
+          _CommandBar(
+            onPressed: onCommandBar ?? () => showCommandPalette(context),
+          ),
           PanelHeader(
             eyebrow: 'vaults',
             count: _vaultPillCount(settings),
@@ -85,7 +95,7 @@ class Sidebar extends ConsumerWidget {
             eyebrow: 'canvases',
             count: canvases.length,
             action: '+ new',
-            onAction: () => _newCanvas(context, ref),
+            onAction: () => newCanvas(context),
           ),
           VaultAsyncView<List<CanvasRow>>(
             value: canvasesRead,
@@ -108,57 +118,6 @@ class Sidebar extends ConsumerWidget {
           const AgentFooter(),
         ],
       ),
-    );
-  }
-
-  Future<void> _newCanvas(BuildContext context, WidgetRef ref) async {
-    final access = ref.read(vaultAccessProvider);
-    if (access == null || !access.canWrite) return;
-    final title = await _promptCanvasTitle(context);
-    if (title == null || title.isEmpty || !context.mounted) return;
-    try {
-      final c = await guardVaultWrite(
-        context,
-        () => access.canvas.createCanvas(title: title),
-      );
-      if (c == null) return;
-      ref.read(vaultRevisionProvider.notifier).state++;
-      ref.read(tabsProvider.notifier).navigate(CanvasTab(c.canvasId));
-    } catch (e) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Could not create canvas: $e')));
-      }
-    }
-  }
-
-  Future<String?> _promptCanvasTitle(BuildContext context) async {
-    final controller = TextEditingController();
-    return showDialog<String>(
-      context: context,
-      builder: (ctx) {
-        return AlertDialog(
-          title: const Text('New canvas'),
-          content: TextField(
-            controller: controller,
-            autofocus: true,
-            decoration: const InputDecoration(hintText: 'Title'),
-            onSubmitted: (v) => Navigator.of(ctx).pop(v.trim()),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(ctx).pop(null),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              key: const Key('new-canvas-confirm'),
-              onPressed: () => Navigator.of(ctx).pop(controller.text.trim()),
-              child: const Text('Create'),
-            ),
-          ],
-        );
-      },
     );
   }
 }
@@ -359,13 +318,29 @@ class _ModeSegment extends StatelessWidget {
   }
 }
 
+/// The sidebar's brand row: the ring logo, `open memex` and the version
+/// label (D15). While an update is Ready the logo-to-title gap and the end
+/// padding narrow by [_readyGapSaving] and [_readyPaddingSaving], so the
+/// whole `v<current> · update ready` fits at text scale 1.0 (lead ruling Q1,
+/// #38); every other state keeps the row's geometry.
 class _BrandRow extends ConsumerWidget {
+  static const _padding = 14.0;
+  static const _gap = 9.0;
+  static const _readyGapSaving = 3.0;
+  static const _readyPaddingSaving = 5.0;
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final version = ref.watch(appVersionProvider);
+    final ready = ref.watch(
+      updateControllerProvider.select((s) => s is UpdateReady),
+    );
     return Container(
       height: 44,
-      padding: const EdgeInsets.symmetric(horizontal: 14),
+      padding: EdgeInsetsDirectional.only(
+        start: _padding,
+        end: ready ? _padding - _readyPaddingSaving : _padding,
+      ),
       child: Row(
         children: [
           Container(
@@ -386,7 +361,7 @@ class _BrandRow extends ConsumerWidget {
               ),
             ),
           ),
-          const SizedBox(width: 9),
+          SizedBox(width: ready ? _gap - _readyGapSaving : _gap),
           Text(
             'open memex',
             style: OmType.mono(
@@ -396,14 +371,24 @@ class _BrandRow extends ConsumerWidget {
               letterSpacing: 0.2,
             ),
           ),
-          const Spacer(),
           if (version.isNotEmpty)
-            Text(
-              'v$version',
-              style: OmType.mono(
-                size: 10,
-                color: OmColors.fg3,
-                letterSpacing: 0.8,
+            // Expanded + Align, not a Spacer: the label sits at the row end
+            // and, at a larger text scale, ellipsizes instead of overflowing.
+            Expanded(
+              child: Align(
+                alignment: AlignmentDirectional.centerEnd,
+                child: UpdateVersionLabel(
+                  textKey: const Key('sidebar-version-label'),
+                  version: version,
+                  // The row's own height: the Ready label's click target
+                  // spans it without growing the row.
+                  hitHeight: 44,
+                  style: OmType.mono(
+                    size: 10,
+                    color: OmColors.fg3,
+                    letterSpacing: 0.8,
+                  ),
+                ),
               ),
             ),
         ],
@@ -412,32 +397,158 @@ class _BrandRow extends ConsumerWidget {
   }
 }
 
-class _CommandRow extends StatelessWidget {
-  const _CommandRow({required this.onTap});
-  final VoidCallback onTap;
+/// The Command bar (board C3, pack 77; key `command-bar`): a 244x32 button
+/// under the brand block that opens the Command palette on a click, or on
+/// Enter or Space while it has the keyboard focus (once per key press).
+/// Label `search · ask · run` and the `⌘K` chip. Rest: `surface2` fill,
+/// `line2` border, `fg3` icon, `fg2` label; hover: `surface3`, `line3`,
+/// `fg2` icon, `fg1` label; open (while the palette shows): `surface4`,
+/// `line3`, `fg2`, `fg1`; keyboard focus: the rest look with an
+/// `accentSoft` border.
+class _CommandBar extends ConsumerStatefulWidget {
+  const _CommandBar({required this.onPressed});
+  final VoidCallback onPressed;
+
+  @override
+  ConsumerState<_CommandBar> createState() => _CommandBarState();
+}
+
+class _CommandBarState extends ConsumerState<_CommandBar> {
+  bool _hover = false;
+  bool _focus = false;
+
+  late final Map<Type, Action<Intent>> _actions = {
+    ActivateIntent: CallbackAction<ActivateIntent>(
+      onInvoke: (_) => widget.onPressed(),
+    ),
+    ButtonActivateIntent: CallbackAction<ButtonActivateIntent>(
+      onInvoke: (_) => widget.onPressed(),
+    ),
+  };
+
   @override
   Widget build(BuildContext context) {
+    final open = ref.watch(commandPaletteOpenProvider);
+    final lit = open || _hover;
+    final fill = open
+        ? OmColors.surface4
+        : _hover
+        ? OmColors.surface3
+        : OmColors.surface2;
+    final border = lit
+        ? OmColors.line3
+        : _focus
+        ? OmColors.accentSoft
+        : OmColors.line2;
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 10, 12, 6),
-      child: Container(
-        height: 32,
-        padding: const EdgeInsets.symmetric(horizontal: 10),
-        decoration: BoxDecoration(
-          color: OmColors.surface2,
-          border: Border.all(color: OmColors.line2, width: 1),
-          borderRadius: BorderRadius.circular(6),
-        ),
-        child: Row(
-          children: [
-            const Icon(LucideIcons.search, size: 13, color: OmColors.fg3),
-            const SizedBox(width: 8),
-            Text(
-              'search · ask · run',
-              style: OmType.sans(size: 13, color: OmColors.fg3),
+      child: Semantics(
+        key: PaletteKeys.commandBar,
+        container: true,
+        button: true,
+        label: 'Command bar: search, ask, run. Command K.',
+        onTap: widget.onPressed,
+        child: FocusableActionDetector(
+          shortcuts: keyboardButtonShortcuts,
+          actions: _actions,
+          mouseCursor: SystemMouseCursors.click,
+          onShowFocusHighlight: (v) => setState(() => _focus = v),
+          child: ExcludeSemantics(
+            child: MouseRegion(
+              onEnter: (_) => setState(() => _hover = true),
+              onExit: (_) => setState(() => _hover = false),
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: widget.onPressed,
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: fill,
+                    border: Border.all(color: border, width: 1),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(minHeight: 32),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 10),
+                      child: Row(
+                        children: [
+                          Icon(
+                            LucideIcons.search,
+                            size: 14,
+                            color: lit ? OmColors.fg2 : OmColors.fg3,
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              'search · ask · run',
+                              maxLines: 1,
+                              softWrap: false,
+                              overflow: TextOverflow.ellipsis,
+                              style: OmType.sans(
+                                size: 13,
+                                height: 16 / 13,
+                                color: lit ? OmColors.fg1 : OmColors.fg2,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          const _CommandKChip(),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
             ),
-            const Spacer(),
-            const OmKbd('⌘K'),
-          ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The Command bar's `⌘K` chip: at least 30x18, padding 5, 1 px `line3`
+/// border, radius 4; `⌘` in sans and `K` in mono, both 10.5 in `fg2`.
+class _CommandKChip extends StatelessWidget {
+  const _CommandKChip();
+
+  @override
+  Widget build(BuildContext context) {
+    final sans = OmType.sans(
+      size: 10.5,
+      color: OmColors.fg2,
+      height: 1.2,
+      letterSpacing: 0.2,
+    );
+    final mono = OmType.mono(
+      size: 10.5,
+      color: OmColors.fg2,
+      height: 1.2,
+      letterSpacing: 0.2,
+    );
+    return ConstrainedBox(
+      constraints: const BoxConstraints(minWidth: 30, minHeight: 18),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          border: Border.all(color: OmColors.line3),
+          borderRadius: BorderRadius.circular(4),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 5),
+          child: Center(
+            widthFactor: 1,
+            heightFactor: 1,
+            child: Text.rich(
+              TextSpan(
+                children: [
+                  TextSpan(text: '⌘', style: sans),
+                  TextSpan(text: 'K', style: mono),
+                ],
+              ),
+              maxLines: 1,
+              softWrap: false,
+            ),
+          ),
         ),
       ),
     );

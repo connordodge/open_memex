@@ -6,7 +6,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.4.0"
+version = "0.7.0"
 edition = "2021"
 license = "MIT"
 authors = ["Connor Dodge LLC"]
@@ -49,6 +49,11 @@ chrono = { version = "0.4.44", default-features = false, features = ["clock", "s
 strsim = "0.11.1"
 zip = { version = "9.5", default-features = false, features = ["deflate"] }
 sha2 = "0.10"
+base64 = "0.22"
+# Attachment PDF text (Spec #123 R43, WI #136): MIT. memex-core links it, and
+# only the extraction child (`memex extract-attachment`, which `memex serve` and
+# `memex attach` start) calls it (TD "Extraction at store time, isolated").
+pdf-extract = "0.12"
 
 [profile.release]
 lto = "thin"

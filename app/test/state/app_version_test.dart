@@ -19,6 +19,20 @@ String _mainBody() {
   return source.substring(start, end);
 }
 
+/// The argument of `<provider>.overrideWithValue(…)` in [body], trimmed.
+String _overrideArgument(String body, String provider) {
+  final call = '$provider.overrideWithValue(';
+  final start = body.indexOf(call);
+  expect(start, isNonNegative, reason: 'main() calls $call');
+  var depth = 1;
+  for (var i = start + call.length; i < body.length; i++) {
+    if (body[i] == '(') depth++;
+    if (body[i] == ')') depth--;
+    if (depth == 0) return body.substring(start + call.length, i).trim();
+  }
+  fail('unbalanced $call');
+}
+
 void main() {
   group('provider', () {
     test(
@@ -69,12 +83,50 @@ void main() {
       },
     );
 
-    test('main never reads the build number into the version', () {
-      final body = _mainBody();
+    // TEST-CHANGE (#39, D16, pre-authorized): main() now reads the build
+    // number too (into appBuildNumberProvider), so the pin narrows to the
+    // appVersionProvider override argument.
+    test(
+      'the appVersionProvider override argument never reads buildNumber',
+      () {
+        final body = _mainBody();
 
-      expect(body, contains('PackageInfo.fromPlatform()'));
-      expect(body, isNot(contains('buildNumber')));
-    });
+        expect(body, contains('PackageInfo.fromPlatform()'));
+        final arg = _overrideArgument(body, 'appVersionProvider');
+        expect(arg, isNot(contains('buildNumber')));
+        expect(arg, matches(RegExp(r'^\w+\.version$')));
+      },
+    );
+
+    test(
+      'main overrides appBuildNumberProvider with PackageInfo buildNumber',
+      () {
+        final body = _mainBody();
+        final read = RegExp(
+          r'final\s+(\w+)\s*=\s*await\s+PackageInfo\.fromPlatform\(\)',
+        ).firstMatch(body);
+        expect(
+          read,
+          isNotNull,
+          reason: 'main() reads PackageInfo into a local',
+        );
+        final info = read!.group(1)!;
+
+        expect(
+          _overrideArgument(body, 'appBuildNumberProvider'),
+          '$info.buildNumber',
+        );
+        expect(
+          body.indexOf('appBuildNumberProvider.overrideWithValue('),
+          lessThan(body.indexOf('child: const OpenMemexApp()')),
+          reason: 'in the root ProviderScope overrides',
+        );
+        expect(
+          body.indexOf('appBuildNumberProvider.overrideWithValue('),
+          greaterThan(body.indexOf('ProviderScope(')),
+        );
+      },
+    );
 
     test('main keeps configureFonts ahead of the version override', () {
       final body = _mainBody();

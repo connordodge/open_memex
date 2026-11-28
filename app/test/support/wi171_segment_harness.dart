@@ -100,9 +100,9 @@ Finder wi171Row(int s, int r) => find.byKey(Key('editor-row-$s-$r'));
 Finder wi171FieldOf(int s, int r) =>
     find.descendant(of: wi171Row(s, r), matching: find.byType(EditableText));
 
+/// Row [r]'s controller, also while the row is idle (WI #132, Req 38).
 LivePreviewController wi171Ctrl(WidgetTester tester, int s, int r) =>
-    tester.widget<EditableText>(wi171FieldOf(s, r)).controller
-        as LivePreviewController;
+    segmentRowController(tester, s, r);
 
 /// How many `editor-row-<s>-<r>` Keys segment [s] shows.
 int wi171RowKeys(int s) => find
@@ -135,6 +135,9 @@ Future<void> wi171FocusRow(
   int r, {
   int? local,
 }) async {
+  // TEST-CHANGE (WI #132, Req 38): activate the row first; only the active
+  // row has a field.
+  await activateSegmentRow(tester, s, r, local: local);
   await tester.showKeyboard(wi171Row(s, r));
   await tester.pump();
   final ctrl = wi171Ctrl(tester, s, r);

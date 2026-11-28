@@ -217,7 +217,37 @@ async fn get_tools_lists_edit_note_in_notes_as_a_write_tool_with_its_summary() {
             "writes": true,
         })
     );
-    assert_eq!(tools.len(), 38, "the catalog has 38 tools");
+    assert_eq!(tools.len(), 40, "the catalog has 40 tools");
+}
+
+// ---------- Spec #123 R18, R22: the attachment tools (WI #138) ----------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn get_tools_lists_add_attachment_and_get_attachment_in_notes_with_their_summaries() {
+    let env = Env::start().await;
+
+    let reply = env.get_with_token(TOOLS_PATH).await;
+
+    assert_eq!(reply.status, 200, "{}", reply.body);
+    let body = reply.json();
+    let tools = body["tools"].as_array().expect("tools array");
+    for want in [
+        json!({
+            "name": "add_attachment",
+            "summary": "Stores a file in the vault and returns the markdown to place in a note.",
+            "group": "notes",
+            "writes": true,
+        }),
+        json!({
+            "name": "get_attachment",
+            "summary": "Reads an attachment: an image, a text file's text, or its details.",
+            "group": "notes",
+            "writes": false,
+        }),
+    ] {
+        let rows: Vec<&Value> = tools.iter().filter(|t| t["name"] == want["name"]).collect();
+        assert_eq!(rows, vec![&want], "listed once, exactly: {body}");
+    }
 }
 
 // ---------- AC 5: token and vault ----------

@@ -15,6 +15,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/editor/spell_issues.dart';
+import 'package:open_memex_app/src/widgets/editor/segment_view.dart';
 import 'package:open_memex_app/src/widgets/editor/spell_issue_scope.dart';
 import 'package:open_memex_app/src/widgets/editor/spelling_menu.dart';
 
@@ -24,6 +25,7 @@ import '../../support/app_harness.dart';
 import '../../support/fake_spelling_service.dart';
 import '../../support/font_fetch_hold.dart';
 import '../../support/mac_editing.dart';
+import '../../support/segment_editing_finder.dart';
 import '../../support/spelling_editor_pump.dart';
 
 // ------------------------------------------------------------------ bodies
@@ -76,8 +78,61 @@ class _Wi439Editor {
     ),
   );
 
+  /// The controller of the row holding [needle], also while it is idle
+  /// (WI #132), or of Source mode's field.
   TextEditingController ctrl(String needle) =>
+      rowOf(needle)?.$1.rowController(rowOf(needle)!.$2) ??
       tester.widget<EditableText>(field(needle)).controller;
+
+  /// The rows host and index of the editor row whose text contains
+  /// [needle]; null in Source mode (WI #132: an idle row has no field).
+  (SegmentViewState, int)? rowOf(String needle) {
+    for (final h in allSegmentEditings(tester)) {
+      if (h is! SegmentViewState) continue;
+      for (var i = 0; i < h.rowCount; i++) {
+        if (h.rowController(i)!.text.contains(needle)) return (h, i);
+      }
+    }
+    return null;
+  }
+
+  /// Makes the editor row holding [needle] the active row (a no-op in
+  /// Source mode), so it has a field.
+  ///
+  /// TEST-CHANGE (WI #132, Spec #122 Req 38): "activate the row first".
+  Future<void> activate(String needle, [int? local]) async {
+    final row = rowOf(needle);
+    if (row == null) return;
+    final (host, i) = row;
+    if (host.rowField(i) != null) return;
+    final spec = host.rowSpec(i)!;
+    host.activateRow(
+      i,
+      TextSelection.collapsed(
+        offset: spec.textStart + (local ?? spec.textEnd - spec.textStart),
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+  }
+
+  /// The global rect of the caret before field offset [offset] of the row
+  /// holding [needle]: from its field, or from its paragraph while idle.
+  Rect caretRectOf(String needle, int offset) {
+    final row = rowOf(needle);
+    // A field answers from its own render object, an idle row from its
+    // paragraph's line boxes.
+    if (row != null && row.$1.rowField(row.$2) == null) {
+      final boxes = row.$1.rowBoxes(row.$2)!;
+      final r = boxes.caretRect(offset);
+      return r.shift(boxes.box.localToGlobal(Offset.zero));
+    }
+    final editable = tester
+        .state<EditableTextState>(field(needle))
+        .renderEditable;
+    final r = editable.getLocalRectForCaret(TextPosition(offset: offset));
+    return r.shift(editable.localToGlobal(Offset.zero));
+  }
 
   FocusNode focusNode(String needle) =>
       tester.widget<EditableText>(field(needle)).focusNode;
@@ -91,7 +146,9 @@ class _Wi439Editor {
 
   /// What the editor published for the field holding [needle].
   List<SpellIssue> issues(String needle) {
-    final registry = SpellIssueScope.maybeOf(tester.element(field(needle)));
+    final registry = SpellIssueScope.maybeOf(
+      rowOf(needle)?.$1.context ?? tester.element(field(needle)),
+    );
     expect(registry, isNotNull, reason: 'the field has a SpellIssueRegistry');
     return registry!.issuesFor(ctrl(needle)).value;
   }
@@ -100,6 +157,7 @@ class _Wi439Editor {
   /// [offset], as the platform text input does. The caret is set before the
   /// focus, so focusing never scrolls to wherever the field's caret was.
   Future<void> placeCaret(String needle, int offset) async {
+    await activate(needle, offset);
     final f = field(needle);
     ctrl(needle).selection = TextSelection.collapsed(offset: offset);
     await tester.pump();
@@ -118,6 +176,7 @@ class _Wi439Editor {
   /// Types into the field holding [needle] as the platform text input does:
   /// focuses it and gives it [text] with the caret at [caret].
   Future<void> input(String needle, String text, int caret) async {
+    await activate(needle);
     final f = field(needle);
     await tester.showKeyboard(f);
     await tester.pump();
@@ -180,13 +239,7 @@ class _Wi439Editor {
 
   /// The global rect of the caret before field offset [offset] of the field
   /// holding [needle].
-  Rect caretRect(String needle, int offset) {
-    final editable = tester
-        .state<EditableTextState>(field(needle))
-        .renderEditable;
-    final r = editable.getLocalRectForCaret(TextPosition(offset: offset));
-    return r.shift(editable.localToGlobal(Offset.zero));
-  }
+  Rect caretRect(String needle, int offset) => caretRectOf(needle, offset);
 
   /// Where field offset [offset] of the field holding [needle] sits from the
   /// viewport's top, in px.
@@ -491,9 +544,9 @@ void main() {
         );
         await m.placeCaret('Start here.', 0);
         expect(
-          m.field('Start here.').evaluate().single,
-          isNot(same(m.field('wrld').evaluate().single)),
-          reason: 'the caret row and the issue row are different fields',
+          m.ctrl('Start here.'),
+          isNot(same(m.ctrl('wrld'))),
+          reason: 'the caret row and the issue row are different rows',
         );
 
         await m.checkNow();
@@ -510,6 +563,31 @@ void main() {
         final start = m.at('wrld', 'wrld');
         final sel = m.ctrl('wrld').selection;
         expect((sel.start, sel.end), (start, start + 4));
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'Check Document Now selects and opens the menu for an issue that starts at the first character of its row',
+      (tester) async {
+        final m = await _wi439Pump(
+          tester,
+          body: 'Start here.\n\n- teh first item\n\nLast line is fine.\n',
+        );
+        expect(
+          m.at('teh', 'teh'),
+          0,
+          reason: 'the issue starts at the first character of its row',
+        );
+        await m.placeCaret('Start here.', 0);
+        expect(
+          m.ctrl('Start here.'),
+          isNot(same(m.ctrl('teh'))),
+          reason: 'the caret row and the issue row are different rows',
+        );
+        await m.checkNow();
+        _wi439ExpectOn(m, 'teh');
+        expect(tester.takeException(), isNull);
       },
       variant: macOnly,
     );

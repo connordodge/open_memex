@@ -9,7 +9,8 @@
 // note editor acts (see [SpellCheckHost]).
 import 'dart:async';
 
-import 'package:flutter/foundation.dart' show ValueListenable;
+import 'package:flutter/foundation.dart'
+    show ValueListenable, visibleForTesting;
 import 'package:flutter/rendering.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/widgets.dart';
@@ -22,7 +23,6 @@ import '../../state/settings.dart';
 import '../../state/spell_check_controller.dart';
 import '../../state/spell_session_state.dart';
 import '../../state/spelling_service.dart';
-import 'line_boxes.dart' show findRenderEditable;
 import 'live_preview_controller.dart';
 import 'segment_view.dart';
 import 'spell_issue_scope.dart';
@@ -167,10 +167,24 @@ class _SpellCheckHostState extends ConsumerState<SpellCheckHost> {
     super.dispose();
   }
 
-  /// The primary focus moved: remembers this editor's field holding it, and
-  /// keeps the last one while a SpellingMenu holds it.
+  /// This editor's field that held the primary focus when it last moved.
+  _SpellCheckFieldState? _focusedField;
+
+  /// The primary focus moved: tells the field it left and the field it
+  /// entered (this editor's one focus listener for spelling, whatever its
+  /// row count: WI #131, Spec #122 Req 21), remembers this editor's field
+  /// holding it, and keeps the last one while a SpellingMenu holds it.
   void _onFocus() {
     final field = _fieldWithFocus();
+    final mine = field != null && identical(field._checker, _controller)
+        ? field
+        : null;
+    final left = _focusedField;
+    _focusedField = mine;
+    if (!identical(left, mine)) {
+      if (left != null && left.mounted) left._focusMoved();
+      mine?._focusMoved();
+    }
     if (field != null) {
       _lastFocused = identical(field._checker, _controller) ? field : null;
     } else if (!_spellingMenuHasFocus()) {
@@ -252,8 +266,32 @@ class SpellCheckField extends StatefulWidget {
   State<SpellCheckField> createState() => _SpellCheckFieldState();
 }
 
+/// Test-only work counter: how many times any spell-check field host
+/// answered [SpellFieldHost.line] (a segment row lookup).
+@visibleForTesting
+int debugSpellHostLineCalls = 0;
+
+/// Test-only work counter: how many times any spell-check field host
+/// measured an issue's rect in its field.
+@visibleForTesting
+int debugSpellHostRectCalls = 0;
+
+/// Test-only work counter: how many times any spell-check field host
+/// resolved its field's laid-out text, as main's `editable()` counted: once
+/// per [SpellFieldHost.extent] call (the geometry entry point of an
+/// evaluation's viewport check, once per field), and per issue-rect or
+/// Check Document Now read. [SpellFieldHost.extentAt] reuses the text
+/// [SpellFieldHost.extent] resolved while it stays laid out (WI #127), so
+/// it counts only when there is none.
+@visibleForTesting
+int debugSpellHostEditableCalls = 0;
+
+/// A `TextField`'s default scroll padding, which a row without a field
+/// pads a Check Document Now range by (WI #128).
+const _fieldScrollPadding = EdgeInsets.all(20);
+
 class _SpellCheckFieldState extends State<SpellCheckField>
-    implements SpellFieldHost {
+    implements SpellFieldHost, SpellFieldRun {
   SpellCheckController? _checker;
   ScrollableState? _scrollable;
 
@@ -263,15 +301,10 @@ class _SpellCheckFieldState extends State<SpellCheckField>
   /// [hasFocus] when focus last moved.
   bool _focused = false;
 
-  @override
-  void initState() {
-    super.initState();
-    FocusManager.instance.addListener(_onFocus);
-  }
-
-  /// The primary focus moved: tells the checker when it entered or left
-  /// this field.
-  void _onFocus() {
+  /// The primary focus entered or left this field (the editor's
+  /// [SpellCheckHost] tells it: one focus listener per editor, WI #131):
+  /// tells the checker when that flipped.
+  void _focusMoved() {
     final focused = _focusInside();
     if (focused == _focused) return;
     _focused = focused;
@@ -280,8 +313,8 @@ class _SpellCheckFieldState extends State<SpellCheckField>
 
   /// Whether the primary focus is this field or below it.
   bool _focusInside() {
-    final focus = FocusManager.instance.primaryFocus?.context;
-    if (!mounted || focus == null || !focus.mounted) return false;
+    final focus = _primaryFocusContext();
+    if (!mounted || focus == null) return false;
     if (identical(focus, context)) return true;
     var inside = false;
     focus.visitAncestorElements((e) {
@@ -295,20 +328,49 @@ class _SpellCheckFieldState extends State<SpellCheckField>
   @override
   void activate() {
     super.activate();
-    _segment = context.findAncestorStateOfType<SegmentViewState>();
+    if (_findSegment()) _checker?.addField(widget.controller, this);
+  }
+
+  /// Finds the segment holding this field; true when it changed ([run]
+  /// changed with it).
+  bool _findSegment() {
+    final segment = context.findAncestorStateOfType<SegmentViewState>();
+    if (identical(segment, _segment)) return false;
+    _segment = segment;
+    return true;
   }
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    _segment = context.findAncestorStateOfType<SegmentViewState>();
+    final moved = _findSegment();
     _scrollable = Scrollable.maybeOf(context, axis: Axis.vertical);
     final checker = SpellCheckScope.maybeOf(context);
     if (!identical(checker, _checker)) {
       _checker?.removeField(widget.controller, this, forget: false);
       _checker = checker;
       checker?.addField(widget.controller, this);
+    } else if (moved) {
+      // Joins again under its new run.
+      checker?.addField(widget.controller, this);
     }
+  }
+
+  @override
+  Object? get run {
+    final segment = _segment;
+    return segment != null && segment.mounted ? segment : null;
+  }
+
+  @override
+  List<TextEditingController>? fieldsWithin(double top, double bottom) {
+    final segment = _segment;
+    if (segment == null || !segment.mounted) return null;
+    final rows = segment.rowsWithin(top, bottom);
+    if (rows == null) return null;
+    return [
+      for (var i = rows.first; i <= rows.last; i++) segment.rowController(i)!,
+    ];
   }
 
   @override
@@ -322,13 +384,13 @@ class _SpellCheckFieldState extends State<SpellCheckField>
 
   @override
   void dispose() {
-    FocusManager.instance.removeListener(_onFocus);
     _checker?.removeField(widget.controller, this, forget: true);
     super.dispose();
   }
 
   @override
   SpellFieldLine line(TextEditingController field) {
+    debugSpellHostLineCalls++;
     final segment = _segment;
     if (segment != null && segment.mounted) {
       final row = segment.rowLineOf(field);
@@ -343,24 +405,99 @@ class _SpellCheckFieldState extends State<SpellCheckField>
     return (line: field.text, base: 0, atSegmentStart: true);
   }
 
-  @override
-  RenderEditable? editable() {
+  /// The laid-out text [extent] last resolved ([_text]), which [extentAt]
+  /// reuses while it is still laid out in the tree.
+  RenderBox? _slot;
+
+  /// The `RichText` span whose plain-text length [_slotLength] holds.
+  InlineSpan? _slotSpan;
+  int _slotLength = 0;
+
+  /// This field's laid-out text (WI #127): the text slot under it, a
+  /// field's or a `RichText`'s standing in for it (`textSlotBox`, the
+  /// row-geometry accessor's text-slot half), or null.
+  RenderBox? _text() {
+    debugSpellHostEditableCalls++;
     if (!mounted) return null;
-    final editable = findRenderEditable(context.findRenderObject());
-    return editable != null && editable.attached && editable.hasSize
-        ? editable
+    final box = textSlotBox(context.findRenderObject());
+    return box != null && box.attached ? box : null;
+  }
+
+  /// [box]'s global top and the global bottom of its local [rect].
+  static ({double top, double bottom}) _globalBand(RenderBox box, Rect rect) =>
+      (
+        top: box.localToGlobal(Offset(0, rect.top)).dy,
+        bottom: box.localToGlobal(Offset(0, rect.bottom)).dy,
+      );
+
+  @override
+  ({double top, double bottom})? extent() {
+    final box = _slot = _text();
+    return box == null ? null : _globalBand(box, Offset.zero & box.size);
+  }
+
+  @override
+  ({double top, double bottom})? extentAt(int offset) {
+    if (!mounted) return null;
+    final cached = _slot;
+    final box = cached != null && cached.attached && cached.hasSize
+        ? cached
+        : _slot = _text();
+    final Rect? caret = switch (box) {
+      final RenderEditable field => field.getLocalRectForCaret(
+        TextPosition(offset: offset.clamp(0, field.plainText.length)),
+      ),
+      final RenderParagraph text => _paragraphCaret(text, offset),
+      _ => null,
+    };
+    return box == null || caret == null ? null : _globalBand(box, caret);
+  }
+
+  /// [text]'s caret rect at [offset] (clamped to its text), as tall as its
+  /// line's caret.
+  Rect _paragraphCaret(RenderParagraph text, int offset) {
+    final position = TextPosition(offset: offset.clamp(0, _lengthOf(text)));
+    final at = text.getOffsetForCaret(position, Rect.zero);
+    return Rect.fromLTWH(at.dx, at.dy, 0, text.getFullHeightForCaret(position));
+  }
+
+  /// [text]'s plain-text length, counted once per span (no copy of its
+  /// text: a row's span can hold a whole long paragraph).
+  int _lengthOf(RenderParagraph text) {
+    final span = text.text;
+    if (!identical(span, _slotSpan)) {
+      _slotSpan = span;
+      _slotLength = _spanLength(span);
+    }
+    return _slotLength;
+  }
+
+  /// [span]'s plain-text length as its laid-out text holds it: a text
+  /// span's text, one code unit per placeholder (a widget span).
+  static int _spanLength(InlineSpan span) {
+    var length = 0;
+    span.visitChildren((s) {
+      length += switch (s) {
+        TextSpan(:final text) => text?.length ?? 0,
+        PlaceholderSpan() => 1,
+        _ => 0,
+      };
+      return true;
+    });
+    return length;
+  }
+
+  @override
+  ({double top, double bottom})? viewport() {
+    final box = _scrollable?.context.findRenderObject();
+    return box is RenderBox && box.attached && box.hasSize
+        ? _globalBand(box, Offset.zero & box.size)
         : null;
   }
 
   @override
-  RenderBox? viewportBox() {
-    final box = _scrollable?.context.findRenderObject();
-    return box is RenderBox && box.attached && box.hasSize ? box : null;
-  }
-
-  @override
   bool revealed(TextEditingController field) =>
-      field is! LivePreviewController || !field.tableRow || field.tableRevealed;
+      field is! LivePreviewController || !field.textHidden;
 
   @override
   ValueListenable<bool>? revealGate(TextEditingController field) =>
@@ -391,16 +528,19 @@ class _SpellCheckFieldState extends State<SpellCheckField>
     return found;
   }
 
-  /// [issue]'s range in the field's laid-out text (local), or null.
+  /// [issue]'s range in the field's laid-out text ([_text], local), or
+  /// null.
   Rect? _rectOf(SpellIssue issue) {
-    final e = editable();
-    if (e == null) return null;
-    final boxes = e.getBoxesForSelection(
-      TextSelection(
-        baseOffset: issue.start,
-        extentOffset: issue.start + issue.length,
-      ),
+    debugSpellHostRectCalls++;
+    final range = TextSelection(
+      baseOffset: issue.start,
+      extentOffset: issue.start + issue.length,
     );
+    final boxes = switch (_text()) {
+      final RenderEditable field => field.getBoxesForSelection(range),
+      final RenderParagraph text => text.getBoxesForSelection(range),
+      _ => const <TextBox>[],
+    };
     if (boxes.isEmpty) return null;
     var rect = boxes.first.toRect();
     for (final b in boxes.skip(1)) {
@@ -412,24 +552,34 @@ class _SpellCheckFieldState extends State<SpellCheckField>
   /// Check Document Now's move to [issue], an issue of this field: selects
   /// its range (and the segment's in a live preview row), focuses the field,
   /// scrolls the range into view and, after the frame, opens SpellingMenu on
-  /// it. Nothing more happens once [stillCurrent] is false, the field is
-  /// gone or its text changed.
+  /// it. In a live preview row the row becomes the active row with that
+  /// selection (`SegmentViewState.activateRow`, WI #128), which focuses it;
+  /// a row without a field ([_goToRow]) mounts its field then. Nothing more
+  /// happens once [stillCurrent] is false, the field is gone or its text
+  /// changed.
   Future<void> _goTo(
     SpellIssue issue, {
     required bool Function() stillCurrent,
   }) async {
+    final segment = _segment;
+    final row = segment != null && segment.mounted
+        ? segment.rowIndexOf(widget.controller)
+        : null;
     final field = _editableText();
-    if (field == null) return;
+    if (field == null) {
+      if (segment != null && row != null) {
+        await _goToRow(segment, row, issue, stillCurrent: stillCurrent);
+      }
+      return;
+    }
     final ctrl = widget.controller;
     final text = ctrl.text;
     final end = issue.start + issue.length;
     if (issue.start < 0 || end > text.length) return;
-    final segment = _segment;
-    final base = segment != null && segment.mounted
-        ? segment.rowTextStartOf(ctrl)
-        : null;
-    if (segment != null && base != null) {
-      segment.select(
+    if (segment != null && row != null) {
+      final base = segment.rowSpec(row)!.textStart;
+      segment.activateRow(
+        row,
         TextSelection(baseOffset: base + issue.start, extentOffset: base + end),
       );
     } else {
@@ -437,13 +587,13 @@ class _SpellCheckFieldState extends State<SpellCheckField>
         baseOffset: issue.start,
         extentOffset: end,
       );
+      field.widget.focusNode.requestFocus();
     }
-    field.widget.focusNode.requestFocus();
     // The field's own reveal on focus pads its selection by its scroll
     // padding: padding the same way leaves it nothing to scroll.
     final rect = _rectOf(issue);
     if (rect != null) {
-      editable()?.showOnScreen(
+      _text()?.showOnScreen(
         rect: field.widget.scrollPadding.inflateRect(rect),
         duration: Duration.zero,
       );
@@ -452,7 +602,7 @@ class _SpellCheckFieldState extends State<SpellCheckField>
     if (!stillCurrent() || !mounted || !field.mounted || ctrl.text != text) {
       return;
     }
-    final e = editable();
+    final e = _text();
     final shown = _rectOf(issue);
     if (e == null || shown == null) return;
     await showSpellingMenu(
@@ -462,14 +612,84 @@ class _SpellCheckFieldState extends State<SpellCheckField>
     );
   }
 
+  /// [_goTo] on row [row] of [segment], a row without a field (WI #128):
+  /// the row becomes the active row with [issue]'s range selected, its text
+  /// scrolls the range into view (padded as a field pads it) and, after the
+  /// frame, SpellingMenu opens on the range through the segment
+  /// (`showRowSpellingMenu`), below the range as the row lays it out then.
+  /// The menu hangs off the segment: this host joined the row's `RichText`,
+  /// which the row's field replaces once the row is active.
+  Future<void> _goToRow(
+    SegmentViewState segment,
+    int row,
+    SpellIssue issue, {
+    required bool Function() stillCurrent,
+  }) async {
+    final ctrl = widget.controller;
+    final text = ctrl.text;
+    final end = issue.start + issue.length;
+    if (issue.start < 0 || end > text.length) return;
+    final base = segment.rowSpec(row)!.textStart;
+    segment.activateRow(
+      row,
+      TextSelection(baseOffset: base + issue.start, extentOffset: base + end),
+    );
+    final rect = _rectOf(issue);
+    if (rect != null) {
+      _text()?.showOnScreen(
+        rect: _fieldScrollPadding.inflateRect(rect),
+        duration: Duration.zero,
+      );
+    }
+    await SchedulerBinding.instance.endOfFrame;
+    if (!stillCurrent() || !segment.mounted || ctrl.text != text) return;
+    final now = segment.rowIndexOf(ctrl);
+    final boxes = now == null ? null : segment.rowBoxes(now);
+    if (now == null || boxes == null || !boxes.box.attached) return;
+    final rects = boxes.boxesFor(TextRange(start: issue.start, end: end));
+    if (rects.isEmpty) return;
+    final shown = rects
+        .skip(1)
+        .fold(rects.first, (a, b) => a.expandToInclude(b));
+    await showRowSpellingMenu(
+      segment,
+      now,
+      issue: issue,
+      anchor: boxes.box.localToGlobal(shown.bottomLeft),
+    );
+  }
+
   @override
   Widget build(BuildContext context) => widget.child;
 }
 
-/// The [SpellCheckField] whose subtree holds the primary focus, or null.
-_SpellCheckFieldState? _fieldWithFocus() {
+/// The primary focus's context when an ancestor walk from it is safe, or
+/// null.
+///
+/// Focus can still sit in a field whose row swapped to idle this frame: a
+/// click on a later row deactivates the earlier row's field before focus
+/// moves on. That element is deactivated but still [BuildContext.mounted],
+/// and an ancestor lookup from it throws "Looking up a deactivated
+/// widget's ancestor is unsafe" when a [SpellCheckField] registers in the
+/// same frame. Such a context counts as no focus. Only debug builds can
+/// tell an inactive element; in profile and release the walk is safe and
+/// stops at the deactivated subtree's detached root, so it reaches no
+/// live field.
+BuildContext? _primaryFocusContext() {
   final focus = FocusManager.instance.primaryFocus?.context;
   if (focus == null || !focus.mounted) return null;
+  var active = true;
+  assert(() {
+    active = focus is! Element || focus.debugIsActive;
+    return true;
+  }());
+  return active ? focus : null;
+}
+
+/// The [SpellCheckField] whose subtree holds the primary focus, or null.
+_SpellCheckFieldState? _fieldWithFocus() {
+  final focus = _primaryFocusContext();
+  if (focus == null) return null;
   _SpellCheckFieldState? found;
   bool visit(Element e) {
     if (e is StatefulElement && e.state is _SpellCheckFieldState) {
@@ -485,8 +705,8 @@ _SpellCheckFieldState? _fieldWithFocus() {
 
 /// Whether the primary focus is in a SpellingMenu.
 bool _spellingMenuHasFocus() {
-  final focus = FocusManager.instance.primaryFocus?.context;
-  if (focus == null || !focus.mounted) return false;
+  final focus = _primaryFocusContext();
+  if (focus == null) return false;
   return focus.widget is SpellingMenu ||
       focus.findAncestorWidgetOfExactType<SpellingMenu>() != null;
 }

@@ -171,8 +171,8 @@ fn memex_tools_writes_and_group_ids_are_the_meta_contract() {
     );
     assert_eq!(
         writes.len(),
-        25,
-        "#390 requirement 8's 24 write tools and Spec #7's edit_note"
+        26,
+        "#390 requirement 8's 24 write tools, Spec #7's edit_note and Spec #123's add_attachment"
     );
     assert_eq!(
         writes.len() + reads,
@@ -217,7 +217,32 @@ fn memex_tools_lists_edit_note_in_notes_as_a_write_tool_with_its_summary() {
             "writes": true,
         })
     );
-    assert_eq!(tools.len(), 38, "the catalog has 38 tools");
+    assert_eq!(tools.len(), 40, "the catalog has 40 tools");
+}
+
+// ---------- Spec #123 R18, R22: the attachment tools (WI #138) ----------
+
+#[test]
+fn memex_tools_lists_add_attachment_and_get_attachment_in_notes_with_their_summaries() {
+    let out = tools_json();
+    let tools = out["tools"].as_array().expect("tools array");
+    for want in [
+        json!({
+            "name": "add_attachment",
+            "summary": "Stores a file in the vault and returns the markdown to place in a note.",
+            "group": "notes",
+            "writes": true,
+        }),
+        json!({
+            "name": "get_attachment",
+            "summary": "Reads an attachment: an image, a text file's text, or its details.",
+            "group": "notes",
+            "writes": false,
+        }),
+    ] {
+        let rows: Vec<&Value> = tools.iter().filter(|t| t["name"] == want["name"]).collect();
+        assert_eq!(rows, vec![&want], "listed once, exactly: {out}");
+    }
 }
 
 #[test]

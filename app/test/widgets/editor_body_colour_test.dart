@@ -17,6 +17,7 @@ import 'package:open_memex_app/src/widgets/editor/text_segment.dart';
 import '../robots/segmented_editor_robot.dart';
 import '../support/font_fetch_hold.dart';
 import '../support/mac_editing.dart';
+import '../support/segment_editing_finder.dart';
 import '../support/table_harness.dart';
 
 const _prose = 'Plain body text here';
@@ -74,7 +75,7 @@ void _expectFg1(InlineSpan span, String full, String text, String what) {
 
 /// The span editor row [r] of segment 0 lays out.
 InlineSpan _rowSpan(WidgetTester tester, int r) =>
-    tableRowFieldState(tester, 0, r).renderEditable.text!;
+    segmentRowSpan(tester, 0, r); // idle rows too (WI #132, Req 38)
 
 /// The span the rendered grid's cell ([row], [col]) of table row [r] shows.
 InlineSpan _cellSpan(WidgetTester tester, int r, int row, int col) => tester

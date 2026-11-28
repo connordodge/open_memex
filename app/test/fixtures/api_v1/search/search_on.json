@@ -1,0 +1,95 @@
+{
+  "hits": [
+    {
+      "chunk_id": "01M5DQAYZKVWVP01WR8GCXZ6KZ",
+      "day": "2026-10-17",
+      "note_id": "01M5DQAYZ5T5B865CDF2RWAC37",
+      "note_role": "daily",
+      "note_title": "2026-10-17",
+      "note_updated_at": 1792535788530,
+      "snippet": "Tuned the shop prices.\n\nThen undid half of it.",
+      "start_byte": 0,
+      "via": null
+    },
+    {
+      "chunk_id": "01M5DQAYZG5BY1XHQ8EB1ZKK52",
+      "day": "2026-10-19",
+      "note_id": "01M5DQAYZ51PF87XFZWSV5PWXK",
+      "note_role": "daily",
+      "note_title": "2026-10-19",
+      "note_updated_at": 1792535788528,
+      "snippet": "Sketched a crafting tree.\n\nPrices felt too low in town.",
+      "start_byte": 0,
+      "via": null
+    },
+    {
+      "chunk_id": "01M5DQAYZFW5NANWNHESXCHD7R",
+      "day": null,
+      "note_id": "01M5DQAYZ47QW55S90ZF0A56AH",
+      "note_role": "topic",
+      "note_title": "Economy Design",
+      "note_updated_at": 1792535788527,
+      "snippet": "Sketched a crafting tree.",
+      "start_byte": 0,
+      "via": "2026-10-19"
+    },
+    {
+      "chunk_id": "01M5DQAYZD8QAQXTEBPWGJAC5B",
+      "day": null,
+      "note_id": "01M5DQAYZ4YAPYMEDWXP8WCNGJ",
+      "note_role": "topic",
+      "note_title": "Pacing Notes",
+      "note_updated_at": 1760000120000,
+      "snippet": "Pacing is the quiet half of design: each session needs a slow stretch, a sharp climb, and a short pause before a die🎲 decides the next run.\n\nShort runs, long arcs. See [[Player Loop|the loop]].",
+      "start_byte": 0,
+      "via": null
+    },
+    {
+      "chunk_id": "01M5DQAYZCBYXNN4BBXF6F7XZ2",
+      "day": null,
+      "note_id": "01M5DQAYZ3WP7H0NXZZV9M2315",
+      "note_role": "topic",
+      "note_title": "Player Loop",
+      "note_updated_at": 1760000000000,
+      "snippet": "# Player Loop\n\nExplore, gather, build, repeat. The loop feeds the [[Economy Design]] and an idea nobody has written yet: [[Unwritten Idea]].",
+      "start_byte": 0,
+      "via": null
+    },
+    {
+      "chunk_id": "01M5DQAYZHRX6QQKEPJZ4WVK53",
+      "day": "2026-10-18",
+      "note_id": "01M5DQAYZ4TAPTHDWE5PNWE4W5",
+      "note_role": "daily",
+      "note_title": "2026-10-18",
+      "note_updated_at": 1792535788528,
+      "snippet": "Played the prototype for an hour.\n\nThe [[Player Loop]] drags after the third run.",
+      "start_byte": 0,
+      "via": null
+    },
+    {
+      "chunk_id": "01M5DQAYZE05DCNA8FKNJF1ZNS",
+      "day": "2026-10-16",
+      "note_id": "01M5DQAYZ50YGKE126FXV02TEY",
+      "note_role": "daily",
+      "note_title": "2026-10-16",
+      "note_updated_at": 1760000420000,
+      "snippet": "Morning playtest with the new crafting tree\nand two fresh players.\n\nNo crashes.",
+      "start_byte": 0,
+      "via": null
+    },
+    {
+      "chunk_id": "01M5DQAYZK48B1MVXVDCARVDJY",
+      "day": "2026-10-15",
+      "note_id": "01M5DQAYZ592W2515HPSDF5Q16",
+      "note_role": "daily",
+      "note_title": "2026-10-15",
+      "note_updated_at": 1760000480000,
+      "snippet": "Read about loot tables.",
+      "start_byte": 0,
+      "via": null
+    }
+  ],
+  "query": "prices",
+  "semantic": "on",
+  "truncated": true
+}
