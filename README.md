@@ -43,7 +43,7 @@ Open Memex is released under the [MIT license](LICENSE). To contribute, see [CON
   - `memex links --vault <path> --note-id <id> [--dir in|out|both] [--kind <k>]` — print the link tree
   - `memex add-link --vault <path> --from <id> --to <id> [--kind <k>] [--label <s>]` — insert a wikilink, idempotent
   - `memex serve --vault <path>` — run as an MCP server over stdio (for Claude Desktop, etc.)
-  - `memex serve --root <dir> --listen <host:port>` — run the vault server: serve every vault in `<dir>` over HTTP to the app and agents on your trusted LAN or tailnet. `--listen` has no default. See [`docs/hosted-vault.md`](docs/hosted-vault.md) for a NAS, Linux or an always-on Mac
+  - `memex serve --root <dir> --listen <host:port>` — run the vault server: serve every vault in `<dir>` over HTTP to the app and agents on your trusted LAN or tailnet. `--listen` has no default. See [`docs/hosted-vault.md`](docs/hosted-vault.md) for the Docker image `ghcr.io/connordodge/memex` on a NAS or Unraid, and for Linux or an always-on Mac
   - `memex serve --remote <url>` — bridge stdio MCP to a hosted vault (`<server-url>/vaults/<name>/mcp`, token from `MEMEX_ACCESS_TOKEN`), for Claude Desktop and Raycast
   - `memex vault check --vault <path>` — exit 0 when the folder is safe for a vault (not on a network drive)
   - `memex backup --vault <path> --dest <folder> [--keep <n>] [--if-changed]` — back up a vault into a folder as one `.memex.zip` file and print the result as JSON; it never opens the vault for writing, so it is safe to run while the app is open. Backups also run from the app and the vault server; see [`docs/backups.md`](docs/backups.md)

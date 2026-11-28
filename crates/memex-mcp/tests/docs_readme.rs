@@ -233,6 +233,12 @@ fn memex_invocations(md: &str) -> Vec<(String, Option<String>)> {
                 if !sub.chars().next().is_some_and(|c| c.is_ascii_lowercase()) {
                     continue;
                 }
+                // WI #191: `memex serve: generated a new access token in ...`
+                // is a line the server prints (quoted in the container docs),
+                // not a command: no subcommand name ends in a colon.
+                if sub.trim_matches('`').ends_with(':') {
+                    continue;
+                }
                 let next = words.next().map(|s| s.to_string());
                 out.push((sub.trim_matches('`').to_string(), next));
             }

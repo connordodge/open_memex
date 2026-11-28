@@ -1,6 +1,6 @@
 # Releasing Open Memex
 
-This is the runbook for the person who owns the repo. It has four parts: the one-time cutover that creates the public repo, the steps for every release, recovery when a release goes wrong, and the Self-update signing key and Appcast. Only the repo owner pushes `v*` tags and approves the `release` environment.
+This is the runbook for the person who owns the repo. It has five parts: the one-time cutover that creates the public repo, the steps for every release, the Docker image that follows each release, recovery when a release goes wrong, and the Self-update signing key and Appcast. Only the repo owner pushes `v*` tags and approves the `release` environment.
 
 Every release is a **Release** on the public repo's GitHub Releases: the DMG, the standalone `memex` zip, their SHA-256 sums and the release notes, all for one `v<version>` tag. The release workflow (`.github/workflows/release.yml`) builds, signs, notarizes and publishes it after you approve.
 
@@ -69,11 +69,25 @@ The manual dry-run job reads none of these.
 2. Write `release-notes/v<ver>.md` from the template in `release-notes/README.md`: Highlights, Upgrade and Requirements. If the release migrates vaults to a new schema, the Upgrade section says so with the template's schema line.
 3. Check the pair locally with `scripts/release/check-version.sh v<ver>` (it must exit 0), then open a PR with the bump and the notes and merge it into `main`.
 4. In a fresh clone, pull `main`, tag it and push the tag: `git tag v<ver>` and `git push origin v<ver>`. The tag starts the release workflow.
-5. Approve the run: open the workflow run on the repo's Actions tab and approve the deployment to the `release` environment. Nothing is signed or published until you do.
+5. Approve the run: open the workflow run on the repo's Actions tab and approve the deployment to the `release` environment. Nothing is signed or published until you do. When the Release succeeds, `docker.yml` starts on its own and publishes the vault server image (see [Docker image](#docker-image)).
 6. Check the Release when the run ends. It must be published (not a draft) with four assets: `Open-Memex-<ver>-arm64.dmg`, `memex-<ver>-macos-arm64.zip`, `THIRD_PARTY_NOTICES.txt` and `SHA256SUMS.txt`. Download the DMG, verify it against `SHA256SUMS.txt` (`shasum -a 256 -c --ignore-missing SHA256SUMS.txt`, because the sums file also lists the files you did not download), install it on a Mac and open it; run `scripts/leak-check.sh --artifact` on the files if you want a second look.
 7. For the first two Self-update Releases, run the manual check in [`docs/self-update-acceptance.md`](self-update-acceptance.md) against the Release you just published.
 
 To try a build without publishing, run the Release workflow by hand (Actions → Release → Run workflow) with a version. That dry run reads no secrets, and it does not sign, notarize or publish.
+
+## Docker image
+
+The vault server image is `ghcr.io/connordodge/memex`. A successful Release triggers `.github/workflows/docker.yml`, which builds the image for `linux/amd64` and `linux/arm64`, smoke-tests both and publishes `ghcr.io/connordodge/memex:<x.y.z>`, `:<x.y>` and `:latest`. It moves `<x.y>` and `latest` only forward: publishing an older version, such as a patch for an earlier minor, never moves either of them backwards. Nothing is published from a pull request or a manual dry run of the Release workflow.
+
+If a publish fails, open the `docker.yml` run on the Actions tab and use **Re-run jobs** on that run. Never fix it by re-running the Release: the tag and the Release already exist, and re-running the Release would try to create them again.
+
+Do this once, after the first image is published. GitHub makes a new package private, so the Docker route in [`hosted-vault.md`](hosted-vault.md) cannot pull it:
+
+1. Open the `memex` package under your account's Packages, then Package settings, and set its visibility to Public.
+2. Check that the package is linked to the `open_memex` repo (the repo's page shows it under Packages). If it is not, connect it from the package page.
+3. From a machine that is not signed in to ghcr.io, run `docker pull ghcr.io/connordodge/memex:latest` to check that it is public.
+
+The first image comes from the first Release after v0.7.0; earlier Releases are not published retroactively.
 
 ## Recovery
 
