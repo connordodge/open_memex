@@ -11,7 +11,7 @@
 //   token and polling resumes with it;
 // - leaving with unsent text asks first; a vault deleted on the server
 //   returns to the picker, whose row offers removal.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/screens/vault_picker.dart';
 import 'package:open_memex_app/src/state/vault_state.dart';

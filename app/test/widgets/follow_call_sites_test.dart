@@ -4,7 +4,7 @@
 //
 // WI #266 (N3), from the `plain click navigates` group on: the tab state each
 // call site leaves, plain and with Cmd held.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';

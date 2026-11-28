@@ -7,7 +7,7 @@
 // - The look from pack 361 (S2): labels, icons, danger delete, 198x32 items.
 // Seams: wi361_rows (a bare region over mock prefs, FakeFileRevealer), real
 // temp vault folders. Never a real Finder.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';

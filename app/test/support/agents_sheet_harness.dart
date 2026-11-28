@@ -12,7 +12,7 @@
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/agents_sheet/connect/claude_config_reader.dart';
@@ -91,8 +91,8 @@ class AgentsSheetHarness {
     required this.menuHost,
     required this.routes,
     required this.originFocus,
-    required GlobalKey hostKey,
-  }) : _hostKey = hostKey;
+    required this._hostKey,
+  });
 
   final WidgetTester _tester;
   final ProviderContainer container;

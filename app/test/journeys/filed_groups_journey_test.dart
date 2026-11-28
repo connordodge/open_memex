@@ -15,7 +15,7 @@
 // Open Correction rows are rendered by WI #261; here the vault holds the open
 // ExcerptMovedCorrection with the Why? text after the section re-reads.
 import 'package:flutter/gestures.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/db/feedback_reads.dart';
 import 'package:open_memex_app/src/state/tabs_state.dart';

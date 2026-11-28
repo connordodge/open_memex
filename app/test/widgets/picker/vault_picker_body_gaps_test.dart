@@ -2,7 +2,7 @@
 // body's lists. An eyebrow sits 10 px above its first row (no gap is added
 // before the first row), and rows in a list are 6 px apart. Pinned for the
 // RECENT and the SERVERS lists on the full-screen picker.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/state/vault_ref.dart';
 

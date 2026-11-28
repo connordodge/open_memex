@@ -36,9 +36,8 @@ abstract class CloudFolderProbe {
 
 /// The real probe over `dart:io`.
 class IoCloudFolderProbe implements CloudFolderProbe {
-  /// [environment] defaults to the process environment; tests pass their own.
-  const IoCloudFolderProbe({Map<String, String>? environment})
-    : _environment = environment;
+  /// [_environment] defaults to the process environment; tests pass their own.
+  const IoCloudFolderProbe({this._environment});
 
   final Map<String, String>? _environment;
 

@@ -18,7 +18,7 @@
 // - [TableBody.segmentBoxes] is the segment's `LineBoxSource` (segment
 //   offsets): take press points and expected rects from it, never from
 //   hard-coded coordinates (D18).
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';

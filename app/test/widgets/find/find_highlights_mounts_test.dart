@@ -11,7 +11,7 @@
 // only. Expected x and width come from each surface's own line boxes; the
 // box is 17 px (times the workspace's text scale) tall, centred on its line
 // box. Clicks land on plain body lines (53-C).
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/editor/editor_rows.dart';

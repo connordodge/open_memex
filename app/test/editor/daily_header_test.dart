@@ -1,7 +1,7 @@
 // WI #22 (A5): the fixed date header replaces the editable title for
 // `role: daily` notes, with a `Today` badge only on today's date (Req 4, 48,
 // 49; C5 header format).
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/db.dart';

@@ -11,7 +11,7 @@
 //
 // Each issue word has its own scripted guesses (`teh` -> `the`, `wrld` ->
 // `world`, `smal` -> `small`), so the menu shown says which issue it is for.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/editor/spell_issues.dart';

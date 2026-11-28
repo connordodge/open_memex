@@ -7,7 +7,7 @@
 // every low-level seam is overridden here. Extra overrides (for example
 // `agentActivityAsyncProvider`) go in `overrides` and must not repeat one
 // the harness already sets.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/state/app_exit.dart';

@@ -299,9 +299,10 @@ void main() {
         final seen = file.readAsStringSync().split('|');
         expect(seen.take(2).join('|'), "a b|it's");
 
-        // Detached: the child is not this process's child (a started process
-        // in the default mode has this pid as its parent) and is outside this
-        // process's group (it leads a group of its own).
+        // Detached: the child is outside this process's group (it leads a
+        // group of its own), so it outlives the app. Its parent pid is not
+        // checked: since Dart 3.14 a detached process is started directly,
+        // so its parent is this process until this process exits.
         final ownGroup = await Process.run('/bin/ps', [
           '-o',
           'pgid=',
@@ -309,7 +310,6 @@ void main() {
           '$pid',
         ]);
         expect(ownGroup.exitCode, 0, reason: '${ownGroup.stderr}');
-        expect(seen[2].trim(), isNot('$pid'));
         expect(seen[3].trim(), isNot((ownGroup.stdout as String).trim()));
       },
       timeout: const Timeout(Duration(seconds: 30)),

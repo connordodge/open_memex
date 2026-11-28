@@ -9,7 +9,7 @@
 // from `editorNoteAsyncProvider` (D18). The narrow-width test pumps
 // `NoteHeader` alone at the 320 px editor's content width: the full editor
 // toolbar is not part of the title row.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/semantics.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -29,6 +29,13 @@ import '../../support/font_fetch_hold.dart';
 const _wi14Flagged = '01JWI14HEADFLAGGED00000014';
 const _wi14Plain = '01JWI14HEADPLAIN0000000014';
 const _wi14Label = 'Read-only for agents';
+
+// The icon's Tooltip sets excludeFromSemantics, so find.byTooltip only matches
+// it through flutter_test's own Tooltip type, which since the material_ui
+// migration is not the one the app builds. Match the app's Tooltip directly.
+final _wi14Tooltip = find.byWidgetPredicate(
+  (w) => w is Tooltip && w.message == _wi14Label,
+);
 const _wi14Title = Key('editor-title');
 const _wi14Header = Key('note-header');
 const _wi14Menu = Key('note-menu');
@@ -107,7 +114,7 @@ void main() {
           reason: 'D19: the SizedBox sits inside the Tooltip',
         );
         expect(tester.widget<Tooltip>(tooltips).message, _wi14Label);
-        expect(find.byTooltip(_wi14Label), findsOneWidget);
+        expect(_wi14Tooltip, findsOneWidget);
 
         // Next to the title: inside the header, on the title row.
         expect(
@@ -182,7 +189,7 @@ void main() {
 
         expect(find.byKey(_wi14Title), findsOneWidget);
         expect(_wi14Icon, findsNothing);
-        expect(find.byTooltip(_wi14Label), findsNothing);
+        expect(_wi14Tooltip, findsNothing);
         expect(find.byIcon(LucideIcons.botOff), findsNothing);
       },
     );
@@ -215,7 +222,7 @@ void main() {
         h.container.read(_wi14Gate.notifier).state = false;
         await pumpFrames(tester);
         expect(_wi14Icon, findsNothing, reason: 'gate closed');
-        expect(find.byTooltip(_wi14Label), findsNothing);
+        expect(_wi14Tooltip, findsNothing);
         expect(find.byKey(_wi14Title), findsOneWidget);
 
         h.container.read(_wi14Gate.notifier).state = true;

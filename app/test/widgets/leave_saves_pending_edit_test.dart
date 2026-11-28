@@ -5,7 +5,7 @@
 //
 // Time is a FakeClock: `tester.pump` never moves it, so the debounce can only
 // fire when a test advances it, and "with the clock not advanced" is exact.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/editor/segments.dart';

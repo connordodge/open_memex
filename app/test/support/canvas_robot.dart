@@ -2,7 +2,7 @@
 // bare CanvasView (not the workspace, whose OmDot pulse never settles) next to
 // a note-drag source; the robot drives drags, drops, links and edge edits and
 // reads what the view paints.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/state/canvas_state.dart';

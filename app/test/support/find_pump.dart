@@ -5,7 +5,7 @@
 // Widget tests that use it call `holdFontFetches()` (test/support/
 // font_fetch_hold.dart) once at the top of `main()`, so text lays out in the
 // flutter_test fallback font and no google_fonts fetch reaches a test zone.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/editor/find_in_note.dart';

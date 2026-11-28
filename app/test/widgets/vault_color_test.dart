@@ -4,7 +4,7 @@
 // for a table of labels and against the colours the real sidebar pills
 // draw. Seams: hosted_harness (fake vault server, mock prefs) and a real
 // temp vault folder.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:open_memex_app/src/screens/workspace.dart';

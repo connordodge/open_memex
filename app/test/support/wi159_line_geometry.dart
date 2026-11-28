@@ -3,7 +3,7 @@
 // boxes. Owned by #159's tests (line_boxes_test, segment_editing_test).
 import 'dart:ui' show BoxHeightStyle;
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/widgets/editor/live_preview_controller.dart';

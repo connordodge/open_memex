@@ -4,7 +4,7 @@
 // the flip in both directions as the text is typed and cleared, headings
 // staying taller than a line once non-empty, code rows keeping their own
 // strut, and a plain controller keeping the field default.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';

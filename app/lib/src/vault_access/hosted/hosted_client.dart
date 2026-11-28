@@ -111,12 +111,10 @@ class HostedClient {
     this._ref, {
     required this.serverId,
     required this.serverName,
-    required String serverUrl,
-    required String accessToken,
+    required this._serverUrl,
+    required this._accessToken,
     required http.Client httpClient,
-  }) : _serverUrl = serverUrl,
-       _accessToken = accessToken,
-       _http = httpClient;
+  }) : _http = httpClient;
 
   final Ref _ref;
 

@@ -2,7 +2,7 @@
 // icon owns its semantics node. Its Semantics widget is a container, so the
 // label `Read-only for agents` sits on a node of its own, sized to the icon,
 // and is not merged into an ancestor node (the title row or the page).
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/db.dart';
 import 'package:open_memex_app/src/widgets/agent_edits_keys.dart';

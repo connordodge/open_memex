@@ -21,7 +21,7 @@
 //   size.
 // Helpers are copied from #64's `heading_caret_typing_test.dart` with a
 // `_wi90` prefix (no shared test-support edits).
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';

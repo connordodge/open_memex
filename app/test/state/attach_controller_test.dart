@@ -6,7 +6,7 @@
 // while storing. The editor is read through its handles and
 // `editorControllerProvider`; one undo step is checked with Cmd+Z.
 
-import 'package:flutter/material.dart' show FocusManager, SnackBar;
+import 'package:material_ui/material_ui.dart' show FocusManager, SnackBar;
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';

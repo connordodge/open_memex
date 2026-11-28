@@ -13,7 +13,7 @@
 // Seams: FakeWordsAccess (scripted words, held and failing unlearns),
 // FakeMemexCli (`settings get` for the depth field), FakeSpellingService,
 // FakeVaultServer (hosted). Never a real `memex`.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/memex_cli.dart';

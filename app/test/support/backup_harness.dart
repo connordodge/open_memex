@@ -3,7 +3,7 @@
 // with a FakeClock (no real timer is ever created: time moves only with
 // `clock.advance`), a FakeMemexCli, mock SharedPreferences, a FakeTokenStore
 // and every backup fake. No real `memex`, network, Keychain or `~/Library`.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/cli/backup_cli.dart';

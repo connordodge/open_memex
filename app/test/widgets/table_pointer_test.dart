@@ -37,7 +37,7 @@ import 'package:flutter/gestures.dart'
         kPrimaryButton,
         kPrecisePointerHitSlop,
         kSecondaryButton;
-import 'package:flutter/material.dart' hide TableCell;
+import 'package:material_ui/material_ui.dart' hide TableCell;
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';

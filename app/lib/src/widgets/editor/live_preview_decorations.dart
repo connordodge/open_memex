@@ -488,14 +488,11 @@ class LivePreviewDecorations extends SingleChildRenderObjectWidget {
 /// repainting when the controller or its reveal gate changes.
 class _RenderDecorations extends RenderProxyBox {
   _RenderDecorations({
-    required LivePreviewController controller,
-    required LineBoxSource? Function()? boxes,
-    required double textLeft,
-    required Color quoteBandColor,
-  }) : _controller = controller,
-       _boxes = boxes,
-       _textLeft = textLeft,
-       _quoteBandColor = quoteBandColor;
+    required this._controller,
+    required this._boxes,
+    required this._textLeft,
+    required this._quoteBandColor,
+  });
 
   LivePreviewController _controller;
   set controller(LivePreviewController value) {

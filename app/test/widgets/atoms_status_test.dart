@@ -1,7 +1,7 @@
 // WI #69 (D12a, board A12 states legend): `StatusDot` and
 // `OmButtonKind.danger` in widgets/atoms.dart.
 import 'package:flutter/gestures.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/theme/app_theme.dart';
 import 'package:open_memex_app/src/theme/colors.dart';

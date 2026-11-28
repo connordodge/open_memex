@@ -4,7 +4,7 @@
 // machine, the choice marks, a role-less note in a Smart Folder, failures
 // that are not a MemexException, and a rebase that must not go backwards.
 // Test names use no apostrophes.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';

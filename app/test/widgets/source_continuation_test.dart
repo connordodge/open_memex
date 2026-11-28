@@ -2,7 +2,7 @@
 // IME rule, R30, R31; rulings D15, D17). Source mode is the plain mono
 // `editor-source-surface`; continuation is an ancestor key handler around
 // its body field, so the `[[` popover and the IME keep their keys.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 

@@ -7,7 +7,7 @@
 // Use it; don't fork it. Helper requests go to lead-54. Call
 // `holdFontFetches()` at the top of `main()` in a file that uses it. Never
 // pumpAndSettle the workspace (OmDot pulses forever): `pumpFrames` only.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/editor/editor_rows.dart';

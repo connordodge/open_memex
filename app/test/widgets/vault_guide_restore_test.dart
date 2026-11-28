@@ -2,7 +2,7 @@
 // that has a guide revision shows `Restore`; confirming replaces the guide's
 // text with that revision (the current text is kept as a version) and the
 // open editor rebases onto the new version without a conflict banner (D23).
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/memex_cli.dart';

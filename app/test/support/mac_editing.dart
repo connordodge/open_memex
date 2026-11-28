@@ -7,7 +7,7 @@
 // Flutter leaves most editing keys to the platform's selectors, so a test
 // sends the selector the platform would ([macSelector]).
 import 'package:flutter/gestures.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';

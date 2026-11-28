@@ -21,7 +21,7 @@
 //
 // Rows are read through `wi132_idle_rows.dart` (the rows host's accessor);
 // helpers carry the `_t132`/`wi132` prefix. Text is synthetic.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/editor/editor_rows.dart';

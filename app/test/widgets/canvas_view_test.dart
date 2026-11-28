@@ -3,7 +3,7 @@
 // D14a, Req 33, Req 50). Doubles extend the local domain classes (D21):
 // Wi89Canvas serves, holds and records the canvas calls, Wi89Notes records the
 // two link writes. The view is pumped bare (not in the workspace).
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/state/canvas_state.dart';

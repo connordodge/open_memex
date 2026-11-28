@@ -3,7 +3,7 @@
 // recent whose server is gone, the local pill active state, the pill colour
 // hashed from the full label (pack 96 lead decision), and the VAULTS count
 // of board A10 ("VAULTS · 4" over one local and three hosted pills).
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:open_memex_app/src/screens/workspace.dart';

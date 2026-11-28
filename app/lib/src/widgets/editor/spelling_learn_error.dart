@@ -1,6 +1,6 @@
 // WI #438 (Spec #392 req 12, 13b): the error a failed Learn Spelling shows
 // above the editor body, beside NoteDeleteError (ruling D15).
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../inline_error.dart';
