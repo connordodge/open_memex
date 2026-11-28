@@ -164,7 +164,7 @@ class FakeVaultServer {
   /// attachment routes: every `/attachments` request of a vault given to
   /// [serveAttachments] is the no-route 404, a body over 8 MiB is the 8 MiB
   /// 413 on every route (the upload included), and `/api/v1/info` reports
-  /// `server_version` 0.6.0 (else 0.7.0).
+  /// `server_version` 0.6.0 (else 0.7.1).
   bool attachmentRoutesMissing = false;
 
   /// WI #140: the largest upload body; a larger one is the C1 413
@@ -454,7 +454,7 @@ class FakeVaultServer {
           200,
           jsonEncode({
             'api_version': kApiVersion,
-            'server_version': attachmentRoutesMissing ? '0.6.0' : '0.7.0',
+            'server_version': attachmentRoutesMissing ? '0.6.0' : '0.7.1',
           }),
         ),
       );
