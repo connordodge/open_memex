@@ -3,6 +3,32 @@
   <channel>
     <title>Open Memex</title>
     <item>
+      <title>Open Memex 0.7.1</title>
+      <sparkle:version>9</sparkle:version>
+      <sparkle:shortVersionString>0.7.1</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[## Highlights
+
+Open Memex 0.7.1 ships the vault server as a Docker image. NAS users no longer build the binary on the NAS.
+
+- **Docker image.** The vault server is published as `ghcr.io/connordodge/memex` for linux/amd64 and linux/arm64, with each release (tags `x.y.z`, `x.y` and `latest`). It runs `memex serve --root /vaults --listen 0.0.0.0:7878` as user 1000:1000 on Debian trixie. `deploy/compose.yaml` is a ready-made compose file.
+- **Unraid.** [Set up on Unraid](https://github.com/connordodge/open_memex/blob/main/docs/hosted-vault.md#set-up-on-unraid) walks through it. The vault root must be on a pool path such as `/mnt/cache/appdata/memex`, not a `/mnt/user` share, because memex refuses FUSE and network filesystems.
+- **Toolchain.** The macOS app is now built with Flutter 3.50.1. There is no visible change.
+
+## Upgrade
+
+No vault changes. Vaults at schema V9 open as they are.
+
+Self-update offers 0.7.1 to 0.7.0 installs.
+
+## Requirements
+
+Apple silicon Mac, macOS 14 or later (app). The Docker image needs a 64-bit x86 or ARM Linux host with Docker.
+]]></description>
+      <link>https://github.com/connordodge/open_memex/releases/tag/v0.7.1</link>
+      <enclosure url="https://github.com/connordodge/open_memex/releases/download/v0.7.1/Open-Memex-0.7.1-arm64.dmg" sparkle:edSignature="vaPm4wDImPUnceb2dTE0C04/C87jcRacvWrLTDZf2OZddk7rRhk2iNFRXzVDwqp8nudetjznUv0ZK6upFyTrBw==" length="38145926" type="application/octet-stream"/>
+    </item>
+    <item>
       <title>Open Memex 0.7.0</title>
       <sparkle:version>8</sparkle:version>
       <sparkle:shortVersionString>0.7.0</sparkle:shortVersionString>
